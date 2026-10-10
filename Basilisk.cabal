@@ -1,0 +1,98 @@
+cabal-version:      3.0
+name:               Basilisk
+version:            0.2.0.0
+synopsis:           A modal terminal text editor for Haskell, in Haskell
+build-type:         Simple
+
+common warnings
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Wincomplete-patterns
+    -Wincomplete-uni-patterns
+    -Wincomplete-record-updates
+    -Werror=incomplete-patterns
+    -Wredundant-constraints
+    -O2
+    -funbox-strict-fields
+  default-language:   GHC2021
+  default-extensions:
+    StrictData
+    BangPatterns
+    LambdaCase
+    OverloadedStrings
+
+library
+  import:             warnings
+  hs-source-dirs:     src
+  exposed-modules:
+    Basilisk.Document
+    Basilisk.Cursor
+    Basilisk.Types
+    Basilisk.Step
+    Basilisk.Decode
+    Basilisk.Render
+    Basilisk.File
+    Basilisk.Loop
+  build-depends:
+      base        >=4.16 && <5
+    , bytestring  >=0.11 && <0.13
+    , containers  >=0.6  && <0.8
+    , deepseq     >=1.4  && <1.6
+    , directory   >=1.3  && <1.4
+    , filepath    >=1.4  && <1.6
+    , temporary   >=1.3  && <1.4
+    , time        >=1.11 && <1.15
+    , unix        >=2.7  && <2.9
+    , text        >=2.0  && <2.2
+    , text-icu    >=0.8  && <0.9
+    , vty         >=6.0  && <7
+    , vty-unix    >=0.2  && <0.5
+
+executable Basilisk
+  import:             warnings
+  hs-source-dirs:     app
+  main-is:            Main.hs
+  other-modules:      Paths_Basilisk
+  autogen-modules:    Paths_Basilisk
+  ghc-options:        -threaded
+  build-depends:      base, Basilisk
+
+-- Laws, as randomized properties.
+test-suite Basilisk-laws
+  import:             warnings
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     test
+  main-is:            Laws.hs
+  other-modules:      Gen
+  build-depends:
+      base, text, bytestring, deepseq, vty, Basilisk
+    , hedgehog    >=1.4
+
+-- Worked examples, in vim's own vocabulary. Needs no test framework, so
+-- it runs anywhere the editor itself builds.
+test-suite Basilisk-smoke
+  import:             warnings
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     test
+  main-is:            Smoke.hs
+  build-depends:      base, text, vty, Basilisk
+
+-- Totality sweep: every (mode, command, document) shape, forced to
+-- normal form, checked only for freedom from exceptions.
+test-suite Basilisk-exhaustive
+  import:             warnings
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     test
+  main-is:            Exhaustive.hs
+  build-depends:      base, deepseq, Basilisk
+
+-- Complexity benchmarks: these assert scaling between two input sizes
+-- rather than wall-clock thresholds, so they are meaningful in CI.
+benchmark Basilisk-scaling
+  import:             warnings
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     bench
+  main-is:            Bench.hs
+  ghc-options:        -fno-full-laziness -fno-cse
+  build-depends:      base, text, deepseq, vty, Basilisk

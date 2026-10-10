@@ -1,0 +1,23 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain the project targets, from the distribution rather
+      # than a setup action, so CI and the documented reproduction
+      # instructions are the same commands.
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ghc cabal-install libicu-dev
+          ghc --version
+      - name: cabal update
+        run: cabal update
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cabal/store
+          key: ${{ runner.os }}-cabal-${{ hashFiles('Basilisk.cabal') }}
+      - name: check
+        run: ./scripts/check.sh

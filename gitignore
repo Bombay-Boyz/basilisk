@@ -1,0 +1,256 @@
+# ============================================================
+# Haskell: GHC build artifacts
+# ============================================================
+
+dist/
+dist-newstyle/
+.stack-work/
+.stack-work-*/
+cabal.sandbox/
+cabal.sandbox.config
+
+# GHC compilation artifacts
+*.hi
+*.hi-boot
+*.dyn_hi
+*.dyn_hi-boot
+*.o
+*.o-boot
+*.dyn_o
+*.p_o
+*.prof
+*.prof.*
+*.tix
+*.mix
+*.eventlog
+*.hp
+*.dump-*
+*.dump-hi
+*.dump-simpl
+*.dump-to-file
+*.hpc/
+*.hpc*
+*.hie
+*.hie-boot
+
+# GHCi and interpreter artifacts
+.ghci_history
+.ghci_history.*
+ghci_history
+
+# ============================================================
+# Cabal and Stack local state
+# ============================================================
+
+cabal.project.local
+cabal.project.local.*
+cabal.sandbox.config
+cabal.config.local
+cabal.project.freeze.local
+
+# Local package environment files
+.ghc.environment.*
+ghc.environment.*
+
+# ============================================================
+# Haskell IDEs and language servers
+# ============================================================
+
+.hie-bios/
+.hie-bios*
+.hls/
+.hls-*
+.haskell-language-server/
+.haskell-language-server-*
+.hls-install/
+.hls-install-*
+
+# ============================================================
+# HLint, formatters and source tooling
+# ============================================================
+
+.hlint.yaml.local
+.ormolu-cache/
+.fourmolu-cache/
+.fourmolu-cache
+.cabal-fmt-cache/
+
+# ============================================================
+# Editors and IDEs
+# ============================================================
+
+# Visual Studio Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# JetBrains IDEs
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*.swx
+.*.sw?
+Session.vim
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-workspace
+
+# ============================================================
+# Operating systems
+# ============================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100/
+.Trashes/
+.fseventsd/
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux desktop
+.directory
+.Trash-*/
+
+# ============================================================
+# Temporary files and logs
+# ============================================================
+
+*.log
+*.log.*
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.swp
+*.swo
+*.pid
+*.seed
+*.cache
+
+# ============================================================
+# Test, coverage and benchmark output
+# ============================================================
+
+coverage/
+coverage-*/
+hpc/
+test-results/
+test-output/
+test-reports/
+junit.xml
+*.junit.xml
+*.coverage
+*.profdata
+
+# Benchmark output (retain benchmark source code)
+benchmark-results/
+bench-results/
+criterion/
+criterion-*/
+
+# ============================================================
+# Generated documentation
+# ============================================================
+
+# Uncomment if documentation is generated and reproducible
+# haddock/
+# docs/generated/
+
+# ============================================================
+# Local databases and application state
+# ============================================================
+
+# SQLite databases and sidecar files
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Local application data
+.env
+.env.*
+!.env.example
+!.env.template
+.local/
+.local-data/
+.local-state/
+
+# ============================================================
+# Secrets and credentials
+# ============================================================
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# OAuth tokens and credentials
+token.json
+tokens.json
+credentials.json
+client_secret*.json
+oauth-token*
+oauth-tokens*
+oauth-credentials*
+refresh-token*
+access-token*
+
+# ============================================================
+# Local environment configuration
+# ============================================================
+
+.direnv/
+.envrc.local
+.python-version.local
+.nix-gc-roots/
+
+# ============================================================
+# Archives and temporary export files
+# ============================================================
+
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+*.patch
+*.diff
+
+# ============================================================
+# Project-specific generated files
+# ============================================================
+
+# Add project-specific runtime artifacts below.
+# Do not ignore source archives, fixtures or test data
+# that are required to reproduce builds or tests.
