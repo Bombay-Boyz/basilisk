@@ -679,7 +679,7 @@ already clamped by the algebra: a `Chars` reach against the line, a
 | `r` | `replaceChars`, clamped to the line, cursor on the last replaced character |
 | `ZZ` `ZQ` | aliases for `writeQuit`\\/`quit True` -- no new logic, two new entry points |
 | counted insert (`3ifoo<Esc>`) | `insertRepeat` on `Editor`, expanded once at `IEscape` |
-| `R` (replace mode) | `Replace ![Maybe Text]`, a mode-local undo stack (2.10f) |
+| `R` (replace mode) | `Replace ![ReplaceUndo]`, a mode-local undo stack (2.10f) |
 | `: /`, `:w :w! :q :q! :wq :x` | prompt mode |
 
 Adding a motion really is one equation, and it becomes available to
@@ -1449,12 +1449,11 @@ transition.
 
 `3ifoo<Esc>` types its session's text that many times in total, via
 `insertRepeat` on `Editor` and one expansion at `IEscape`; `R` overwrites
-character by character, pushing what each step overwrote onto the mode's
-own stack (`Replace ![Maybe Text]`) so backspace can restore it --
-`Just "\n"` is a reserved sentinel marking a line split rather than an
-overwrite, unambiguous because an actual overwritten cluster can never
-equal a newline. Both reuse machinery already proven elsewhere (`.`'s
-replay, `;`'s nudge) rather than inventing a second mechanism.
+character by character, pushing typed undo entries onto the mode's own
+stack (`Replace ![ReplaceUndo]`). A newline entry records both the split
+and any grapheme it replaced, so Backspace rejoins the rows and restores
+that grapheme. Both reuse machinery already proven elsewhere (`.`'s
+replay, `;`’s nudge) rather than inventing a second mechanism.
 
 Five defects, all found running this work rather than reasoning about
 it, and the first three are the same bug recurring in three independent
@@ -1626,12 +1625,6 @@ pty -- produced exactly the expected text.
   needs a second, overwrite-based repeat mechanism parallel to
   `insertRepeat`'s insert-based one, and plain `R` is overwhelmingly
   the common case. `3ifoo<Esc>` (counted insert) works.
-- **Backspacing across a Replace-mode newline rejoins the lines but
-  does not restore what the next line used to start with.** Vim
-  remembers it; doing so here would need a second restore mechanism
-  parallel to the character-level one `R` already has, for a
-  sufficiently rare case (backspacing back across an Enter typed while
-  replacing) that the budget goes elsewhere first.
 
 ---
 

@@ -126,10 +126,9 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 ### P1.7 Close existing Replace-mode edge cases
 
 - Add counts to `R` with one overwrite-based repeat model, including count exhaustion and undo behavior.
-- When Backspace crosses a newline entered in Replace mode, restore the first grapheme of the following line as Vim does; retain correct restoration for empty lines and combining sequences.
-- Keep the restore tape bounded and make it impossible to confuse inserted newlines with overwritten characters.
+- Keep the overwrite history bounded and ensure counted replacement cannot create unbounded state.
 
-**Acceptance:** counted replacement is one coherent undo unit, and crossing a replaced newline in either direction restores the exact prior document.
+**Acceptance:** counted replacement handles count exhaustion deterministically and remains one coherent, bounded undo unit.
 
 ## P2 — Haskell intelligence
 
