@@ -1033,7 +1033,10 @@ library
   if impl(ghc >=9.14)
     build-depends: fourmolu >=0.20 && <0.22
   else
-    build-depends: fourmolu >=0.12 && <0.13
+    if impl(ghc >=9.12)
+      build-depends: fourmolu >=0.18 && <0.20
+    else
+      build-depends: fourmolu >=0.17 && <0.18
 
 executable Basilisk
   import:             warnings
@@ -6320,8 +6323,8 @@ check label condition = unless condition (fail ("FAILED: " <> label))
 # Part 4 — Verification
 
 Declared compiler compatibility starts at GHC 9.10. Cabal selects
-Fourmolu 0.12 for GHC 9.10 and 9.12, and Fourmolu 0.20 or newer on GHC
-9.14 and newer. The current verification run uses:
+Fourmolu 0.17 for GHC 9.10, Fourmolu 0.18 or 0.19 for GHC 9.12, and
+Fourmolu 0.20 or newer on GHC 9.14 and newer. The current verification run uses:
 
 ```
 Linux, GHC 9.14.1, cabal-install from the workspace image
@@ -6329,7 +6332,8 @@ text-2.1.3, containers-0.8, time-1.15, fourmolu-0.21.0.0
 text-icu-0.8.0.5 (against real libicu), hedgehog-1.7
 ```
 
-The GHC 9.10 and 9.12 dependency branch is declared and covered by CI.
+Each supported compiler line has a matching Fourmolu parser branch and is
+covered by CI.
 
 Reproduce with:
 

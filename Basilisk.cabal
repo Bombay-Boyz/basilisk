@@ -52,7 +52,10 @@ library
   if impl(ghc >=9.14)
     build-depends: fourmolu >=0.20 && <0.22
   else
-    build-depends: fourmolu >=0.12 && <0.13
+    if impl(ghc >=9.12)
+      build-depends: fourmolu >=0.18 && <0.20
+    else
+      build-depends: fourmolu >=0.17 && <0.18
 
 executable Basilisk
   import:             warnings
