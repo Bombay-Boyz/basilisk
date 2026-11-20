@@ -50,13 +50,7 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ### P0.3 Build a terminal-driven regression harness — complete
 
-- Add scripted PTY scenarios for startup, insert/edit, save, quit, resize, and error display.
-- Assert the status and mode indicators remain anchored at the bottom row at small, normal, and resized terminal dimensions.
-- Check that the terminal is restored after normal quit, save failure, formatter exceptions, and unexpected synchronous IO failures.
-- Cover zero-size and narrow terminals, Unicode grapheme movement, wide glyphs, tabs, CR/LF variants, ANSI-like file contents, and terminal capability differences.
-- Keep pure state-machine tests and terminal integration tests separate so failures identify the responsible layer.
-
-**Completed:** `test/Terminal.py` exercises save/quit, mode-bar placement, failed Haskell formatting, resize, alternate-screen cleanup, and terminal attribute restoration through a real PTY. The repository check script runs it in CI. Broader platform and Unicode terminal matrix coverage remains under P0.4.
+**Completed:** `test/Terminal.py`, run by `scripts/check.sh` in CI, covers PTY startup, insert and save, quit, bottom-row mode placement, formatter failure, resize, alternate-screen cleanup, and terminal attribute restoration. Broader terminal-size, platform, and Unicode rendering cases remain part of release hardening.
 
 ### P0.4 Define behavior and safety guarantees for the first release
 
@@ -71,11 +65,7 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ### P1.1 Add text objects — complete
 
-- Implement inner and around objects for words, quoted strings, and balanced delimiters (`iw`/`aw`, `i"`/`a"`, `i(`/`a(`, plus bracket aliases where appropriate).
-- Represent the selected range through the existing reach/operation algebra so delete, change, and yank share one selection definition.
-- Specify behavior at empty lines, unmatched delimiters, nested delimiters, cursor-on-delimiter positions, counts, and Unicode grapheme boundaries.
-
-**Completed:** `iw`/`aw`, quote objects, and nested balanced delimiter objects are represented as explicit spans and compose with `d`, `c`, and `y`. Focused tests cover counts, unmatched pairs, nesting, and combining graphemes. Broader randomized span laws remain desirable.
+**Completed:** inner and around word, quote, and balanced delimiter objects use explicit spans and compose with delete, change, and yank. Counts, unmatched pairs, nested delimiters, closing-bracket lookup, and combining graphemes have focused tests. Randomized span laws remain a follow-up under the cross-cutting test requirements.
 
 ### P1.2 Add Visual mode
 
