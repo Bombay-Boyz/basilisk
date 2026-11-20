@@ -1,23 +1,32 @@
 name: ci
 on: [push, pull_request]
+
 jobs:
   check:
+    name: GHC ${{ matrix.ghc }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep every release line from 9.10 onward; `latest` advances as
+        # new stable GHC lines are added.
+        ghc: ['9.10', '9.12', '9.14', 'latest']
     steps:
       - uses: actions/checkout@v4
-      # The toolchain the project targets, from the distribution rather
-      # than a setup action, so CI and the documented reproduction
-      # instructions are the same commands.
-      - name: install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ghc cabal-install libicu-dev
-          ghc --version
-      - name: cabal update
-        run: cabal update
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libicu-dev
+      - uses: haskell-actions/setup@v2
+        id: setup-haskell
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: latest
+      - name: Show toolchain
+        run: ghc --version && cabal --version
       - uses: actions/cache@v4
         with:
           path: ~/.cabal/store
-          key: ${{ runner.os }}-cabal-${{ hashFiles('Basilisk.cabal') }}
-      - name: check
+          key: ${{ runner.os }}-ghc-${{ steps.setup-haskell.outputs.ghc-version }}-cabal-${{ hashFiles('Basilisk.cabal', 'cabal.project') }}
+      - name: Update package index
+        run: cabal update
+      - name: Run quality checks
         run: ./scripts/check.sh
