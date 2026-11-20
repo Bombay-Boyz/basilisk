@@ -53,6 +53,9 @@ module Basilisk.Types
   ) where
 
 import Control.DeepSeq (NFData)
+import qualified Data.Map.Strict as Map
+import qualified Data.Sequence as Seq
+import Data.Sequence (ViewL (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics (Generic)
@@ -119,7 +122,7 @@ boundedRepeatCount k t
   | Text.null t = bounded k
   | otherwise   = min (bounded k) (max 0 (maxPasteChars `div` Text.length t))
 
-data PromptKind = ExCommand | Search
+data PromptKind = ExCommand | Search | SearchOperator !Int !Operator
   deriving (Eq, Show, Generic, NFData)
 
 -- | Whether the current insert session has already opened an undo
@@ -256,10 +259,29 @@ undoLimit = 1000
 serialise :: Editor -> Text
 serialise e
   | bBornEmpty (buffer e) && Text.null body = Text.empty
-  | otherwise = encodeEol (bEol (buffer e)) (body <> terminator)
+  | otherwise = Text.concat (renderRows rows breakMap 0)
   where
-    body       = toText (bDocument (buffer e))
-    terminator = if bFinalEol (buffer e) then Text.singleton '\n' else Text.empty
+    body = toText (bDocument (buffer e))
+    rows = Text.splitOn "\n" body
+    originals = bOriginalBreaks (buffer e)
+    originalStyles = Seq.fromList (map snd originals)
+    breakMap = Map.fromListWith (flip (Seq.><))
+      [(line, Seq.singleton ending) | (line, ending) <- originals]
+    renderRows [] _ _ = []
+    renderRows (line : rest) available i =
+      let hasBreak = not (null rest) || bFinalEol (buffer e)
+          (ending, nextMap) = takeEnding line i available
+          piece = line <> if hasBreak then eolText ending else Text.empty
+      in piece : renderRows rest nextMap (i + 1)
+    takeEnding line i available = case Map.lookup line available of
+      Just endings -> case Seq.viewl endings of
+        ending :< more -> (ending, if Seq.null more then Map.delete line available else Map.insert line more available)
+        EmptyL -> fallback i available
+      Nothing -> fallback i available
+    fallback i available = (maybe (bEol (buffer e)) id (Seq.lookup i originalStyles), available)
+    eolText LF = "\n"
+    eolText CRLF = "\r\n"
+    eolText CR = "\r"
 
 -- | What belongs to the file.
 --
@@ -280,6 +302,7 @@ data Buffer = Buffer
   , bPath      :: !(Maybe FilePath)
   , bStamp     :: !(Maybe Stamp)
   , bEol       :: !Eol
+  , bOriginalBreaks :: ![(Text, Eol)]
   , bFinalEol  :: !Bool
   , bBornEmpty :: !Bool
   , bReadOnly  :: !Bool
@@ -293,6 +316,7 @@ data Editor = Editor
   , mode     :: !Mode
   , cursor   :: !Cursor
   , top      :: !Int
+  , left     :: !Int
   , status   :: !(Maybe Text)
   , register :: !(Maybe Clip)
   , lastFind :: !(Maybe (Bool, Text))
@@ -362,6 +386,7 @@ newEditor p t = Editor
       , bPath      = p
       , bStamp     = Nothing
       , bEol       = LF
+      , bOriginalBreaks = []
       , bFinalEol  = True
       , bBornEmpty = True
       , bReadOnly  = False
@@ -369,6 +394,7 @@ newEditor p t = Editor
   , mode     = Normal
   , cursor   = Cursor (Column 0)
   , top      = 0
+  , left     = 0
   , status   = Nothing
   , register = Nothing
   , lastFind = Nothing

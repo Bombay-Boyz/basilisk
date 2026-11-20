@@ -14,6 +14,8 @@ module Basilisk.Cursor
   , displayColumn
   , syncColumn
   , renderable
+  , sliceDisplay
+  , sliceDisplayAt
   ) where
 
 import Control.DeepSeq (NFData)
@@ -137,3 +139,27 @@ renderable = Text.concat . reverse . snd . Text.foldl' step (Column 0, [])
           | c == '\t'        = Text.replicate w (Text.singleton ' ')
           | Char.isControl c = Text.singleton '\xFFFD'
           | otherwise        = Text.singleton c
+
+-- | Clip a line in terminal-cell coordinates. A wide glyph cut by the
+-- left or right edge is represented by the visible part as spaces, so
+-- the following text and cursor remain aligned with the viewport.
+sliceDisplay :: Int -> Int -> Text -> Text
+sliceDisplay = sliceDisplayAt 0
+
+sliceDisplayAt :: Int -> Int -> Int -> Text -> Text
+sliceDisplayAt initial start width = Text.concat . reverse . snd . Text.foldl' step (initial, [])
+  where
+    end = max start (start + max 0 width)
+    step (col, out) c = (col + w, piece : out)
+      where
+        w = widthAt (Column col) c
+        lo = max start col
+        hi = min end (col + w)
+        visible = max 0 (hi - lo)
+        piece
+          | w == 0 && col >= start && col < end = Text.singleton c
+          | visible == 0 = Text.empty
+          | c == '\t' = Text.replicate visible " "
+          | Char.isControl c = Text.singleton '\xFFFD'
+          | w > visible = Text.replicate visible " "
+          | otherwise = Text.singleton c

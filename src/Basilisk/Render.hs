@@ -18,9 +18,11 @@ module Basilisk.Render
 import qualified Data.Text as Text
 import qualified Graphics.Vty as Vty
 
-import Basilisk.Cursor (displayColumn, renderable)
+import Basilisk.Cursor (displayColumn, renderable, sliceDisplayAt, widthAt)
 import qualified Basilisk.Document as Doc
+import Basilisk.Syntax (Highlight (..), highlightHaskell, highlightMarkdown)
 import Basilisk.Types
+import System.FilePath (takeExtension)
 
 -- | @clampTop h r t@ is the least adjustment of @t@ that puts row @r@
 -- inside a window of @h@ rows.
@@ -51,7 +53,11 @@ body :: (Int, Int) -> Int
 body = max 1 . subtract 1 . snd . usable
 
 scroll :: (Int, Int) -> Editor -> Editor
-scroll wh e = e { top = clampTop (body wh) (Doc.cursorRow (document e)) (top e) }
+scroll wh e = e
+  { top = clampTop (body wh) (Doc.cursorRow (document e)) (top e)
+  , left = clampTop (max 1 (fst (usable wh))) cursorX (left e)
+  }
+  where cursorX = Doc.unColumn (displayColumn (Doc.beforeCursor (document e)))
 
 -- | Draws the window 'scroll' chose, then the status line, then places
 -- the terminal cursor. Assumes 'scroll' has already run for this frame;
@@ -61,7 +67,8 @@ render :: (Int, Int) -> Editor -> Vty.Picture
 render wh0 e = (Vty.picForImage (Vty.vertCat (rows <> [bar]))) { Vty.picCursor = cur }
   where
     (w, h) = usable wh0
-    rows   = map (Vty.text' Vty.defAttr . renderable) (Doc.window (top e) (body wh0) (document e))
+    rows = map (renderLine e w)
+      (Doc.window (top e) (body wh0) (document e))
     bar    = Vty.text' (Vty.defAttr `Vty.withStyle` Vty.reverseVideo)
                        (Text.justifyLeft w ' ' (Text.take w (renderable (statusLine e))))
     clamp lo hi = max lo . min hi
@@ -74,8 +81,31 @@ render wh0 e = (Vty.picForImage (Vty.vertCat (rows <> [bar]))) { Vty.picCursor =
     cur
       | uncurry (*) wh0 <= 0 = Vty.NoCursor
       | otherwise = Vty.Cursor
-          (clamp 0 (w - 1) (Doc.unColumn (displayColumn (Doc.beforeCursor (document e)))))
+          (clamp 0 (w - 1) (Doc.unColumn (displayColumn (Doc.beforeCursor (document e))) - left e))
           (clamp 0 (h - 1) (Doc.cursorRow (document e) - top e))
+
+renderLine :: Editor -> Int -> Text.Text -> Vty.Image
+renderLine e width line = Vty.horizCat (go (Doc.Column 0) tokens)
+  where
+    extension = maybe "" (takeExtension) (path e)
+    tokens
+      | extension == ".hs" || extension == ".lhs" = highlightHaskell line
+      | extension == ".md" || extension == ".markdown" = highlightMarkdown line
+      | otherwise = [(Plain, line)]
+    go :: Doc.Column -> [(Highlight, Text.Text)] -> [Vty.Image]
+    go _ [] = []
+    go col ((kind, text) : rest) =
+      Vty.text' (attribute kind) (sliceDisplayAt (Doc.unColumn col) (left e) width text) :
+        go (advance col text) rest
+    advance :: Doc.Column -> Text.Text -> Doc.Column
+    advance = Text.foldl' (\col c -> col + Doc.Column (widthAt col c))
+    attribute Plain = Vty.defAttr
+    attribute Keyword = Vty.defAttr `Vty.withForeColor` Vty.blue
+    attribute Constructor = Vty.defAttr `Vty.withForeColor` Vty.cyan
+    attribute Literal = Vty.defAttr `Vty.withForeColor` Vty.green
+    attribute Comment = Vty.defAttr `Vty.withForeColor` Vty.yellow
+    attribute Pragma = Vty.defAttr `Vty.withForeColor` Vty.magenta
+    attribute Heading = Vty.defAttr `Vty.withStyle` Vty.bold
 
 -- | One line, and the only channel the editor has to say anything: an
 -- open prompt if there is one, otherwise the last status message,
@@ -89,6 +119,7 @@ statusLine e = case mode e of
   where
     sigil ExCommand = ':'
     sigil Search    = '/'
+    sigil (SearchOperator _ _) = '/'
     idle = maybe (name <> flag) id (status e)
     name = maybe "[No Name]" Text.pack (path e)
     flag = (if readOnly e then " [RO]" else "") <> (if modified e then " [+]" else "")

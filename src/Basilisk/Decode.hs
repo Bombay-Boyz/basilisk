@@ -125,6 +125,9 @@ normalKey st k ms
 normalKey st (Vty.KChar c) _
   | Just mk <- awaiting st     = complete st { awaiting = Nothing } (count st) (mk c)
   | Just mc <- awaitingChar st = emit (mc (count st) c)
+normalKey st (Vty.KChar '/') _
+  | Just (k, op) <- pending st =
+      emit (NEnterPrompt (SearchOperator (bounded (k * count st)) op))
 normalKey st (Vty.KChar c) _
   | prefix st == Just 'g', Just op <- gOperatorOf c =
       (initialKeyState { pending = Just (count st, op) }, Nothing)

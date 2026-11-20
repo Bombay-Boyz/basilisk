@@ -53,16 +53,18 @@ Counts prefix a command and multiply: `3dw`, `5j`, `2d3w`.
   links, and file modes survive a save.
 - Line endings (LF, CRLF, CR) and a missing final newline round-trip
   byte for byte.
+- Mixed line endings remain attached to their original lines when saving;
+  inserted lines use the file's predominant convention.
 - No control character from a file is ever written to the terminal, so
   a file full of escape sequences is displayed, not obeyed.
 
 ## What it does not do yet
 
-No syntax highlighting, auto-indent or LSP. No visual mode, text
-objects, marks, or named registers. Search does not compose with
-operators (`d/pattern`). No macros. Multiple buffers exist as a data
+Haskell and Markdown lexical highlighting is available. No parser-backed
+diagnostics, auto-indent or LSP. No visual mode, text objects, marks, or
+named registers. No macros. Multiple buffers exist as a data
 split but nothing yet switches between them; no
-splits, no config file, no horizontal scrolling. Unix only.
+splits or config file. Unix only.
 
 Horizontal motion on a very long line is O(line): around 8ms per
 keypress at 36k characters. Fine for source, poor for minified files.

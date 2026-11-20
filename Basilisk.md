@@ -16,10 +16,10 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: nine modules, 1582 lines of code, zero warnings under
-the full flag set, all three test suites passing, and the editor has been
-run end to end against a real terminal. See Part 4 for exactly what that
-sentence does and does not cover.
+Status, in one line: ten modules, 1811 lines of code. The verification
+results below are historical results from the last recorded full run; they
+are not a claim that the current checkout has just been built or tested.
+The current source audit is recorded in the latest revision notes.
 
 ---
 
@@ -72,6 +72,7 @@ data Editor = Editor
   , status   :: !(Maybe Text)
   , register :: !(Maybe Text)
   , top      :: !Int
+  , left     :: !Int
   , eol      :: !Eol
   }
 ```
@@ -80,9 +81,9 @@ Each field is irreducible. `path` is the only record of which file a buffer
 came from. `version` bumps exactly when content changes, so a future
 semantic layer can detect staleness without living inside `Editor`.
 `status` is the editor's one channel to the user. `register` is what a
-delete or yank last reached. `top` is the scroll position, which is
-genuinely irreducible — see 2.8. `eol` is the file's own line ending, which
-is not recoverable from the decoded text — see 2.9.
+delete or yank last reached. `top` and `left` are the vertical and
+horizontal viewport positions. `eol` is the dominant separator used for
+new lines; original per-line separators live in the buffer (2.9).
 
 **There is exactly one construction site for this record**,
 `Types.newEditor`. That is deliberate: a strict record with ten fields is
@@ -396,14 +397,15 @@ decodes explicitly with `decodeUtf8'`, and the buffer records its own
 convention:
 
 ```haskell
-decodeEol :: Text -> Text          -- CRLF -> LF, on read
-encodeEol :: Eol -> Text -> Text   -- LF -> CRLF, on write
+splitEols :: Text -> (Text, [(Text, Eol)], Bool)
+serialise :: Editor -> Text
 ```
 
-`encodeEol el . decodeEol = id` on any text whose every `\r` immediately
-precedes a `\n`, which is exactly the set `decodeEol` produces. A file that
-does not exist opens as an empty buffer with its path already set. An
-invalid-UTF-8 file opens as an empty buffer with a status message.
+Each original line break is retained beside its source line. Save maps
+unchanged lines back to their original LF, CRLF or CR separator; newly
+introduced lines use the most frequent separator in the file. A file that
+does not exist opens as an empty buffer with its path already set. Invalid
+UTF-8 opens read-only with a status message.
 
 ## 2.9a Refusing to lose work
 
@@ -916,19 +918,20 @@ prototype, measured, before adoption.
 | Module | Responsibility | Code | With comments |
 |---|---|---|---|
 | `Basilisk.Document` | zipper, coordinates, the reach algebra | 595 | 1156 |
-| `Basilisk.Cursor` | the sticky column, ICU display width | 68 | 139 |
-| `Basilisk.Types` | modes, tagged commands, effects, editor | 205 | 379 |
-| `Basilisk.Step` | the pure transition function | 286 | 552 |
-| `Basilisk.Decode` | vim's key grammar, as a Mealy machine | 177 | 281 |
-| `Basilisk.Render` | viewport, frame, status line | 47 | 94 |
-| `Basilisk.File` | open and write, encoding-safe | 120 | 219 |
+| `Basilisk.Cursor` | the sticky column, ICU display width | 89 | 165 |
+| `Basilisk.Types` | modes, tagged commands, effects, editor | 231 | 405 |
+| `Basilisk.Step` | the pure transition function | 296 | 562 |
+| `Basilisk.Decode` | vim's key grammar, as a Mealy machine | 180 | 284 |
+| `Basilisk.Render` | viewport, frame, status line | 77 | 125 |
+| `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
+| `Basilisk.File` | open and write, encoding-safe | 168 | 272 |
 | `Basilisk.Loop` | the IO shell | 37 | 65 |
 | `Main` | argument parsing | 47 | 55 |
-| **Total** | | **1582** | |
+| **Total** | | **1811** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **1582 lines against a 3,000 ceiling**, leaving 1418
+specified — is **1811 lines against a 3,000 ceiling**, leaving 1189
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -946,24 +949,17 @@ Tests, which do not count against the ceiling:
 ## 2.14 Deliberately out of scope for v1
 
 Vimscript or Lua, a plugin framework, GUI/mouse interaction, a terminal
-emulator, session management, a custom parser or LSP, and search-and-jump
-(`/` opens and accumulates, but `Submit` on a search is a no-op).
-
-Named registers (`"a`, `"b`) remain deferred; the single implicit register
-is implemented. **Paste remains charwise**: `dd` then `p` inserts the line's
-text inline rather than opening a new line, which is visible in the
-end-to-end transcript in Part 4. Linewise paste needs the register to
-record *how* its text was taken, which is one bit on `register` and one
-clause in the paste handler — scoped, not architectural.
-
-Horizontal scrolling is not implemented; the cursor column is clamped to
-the window width.
+emulator, session management, a full Haskell parser and LSP integration.
+Haskell and Markdown have lexical highlighting; parser-backed diagnostics,
+auto-indent, comments and structural navigation remain future work.
+Named registers, macros, text objects, visual mode, ex ranges and
+substitutions are also deferred.
 
 ---
 
 # Part 3 — Code
 
-All nine modules below compile under
+All ten modules below compile under
 `-Wall -Wcompat -Wincomplete-patterns -Wincomplete-uni-patterns
 -Wincomplete-record-updates -Werror=incomplete-patterns
 -Wredundant-constraints -O2` with **zero warnings**, on GHC 9.4.7. Part 4
@@ -1006,6 +1002,7 @@ library
     Basilisk.Step
     Basilisk.Decode
     Basilisk.Render
+    Basilisk.Syntax
     Basilisk.File
     Basilisk.Loop
   build-depends:
@@ -2252,6 +2249,8 @@ module Basilisk.Cursor
   , displayColumn
   , syncColumn
   , renderable
+  , sliceDisplay
+  , sliceDisplayAt
   ) where
 
 import Control.DeepSeq (NFData)
@@ -2375,6 +2374,30 @@ renderable = Text.concat . reverse . snd . Text.foldl' step (Column 0, [])
           | c == '\t'        = Text.replicate w (Text.singleton ' ')
           | Char.isControl c = Text.singleton '\xFFFD'
           | otherwise        = Text.singleton c
+
+-- | Clip a line in terminal-cell coordinates. A wide glyph cut by the
+-- left or right edge is represented by the visible part as spaces, so
+-- the following text and cursor remain aligned with the viewport.
+sliceDisplay :: Int -> Int -> Text -> Text
+sliceDisplay = sliceDisplayAt 0
+
+sliceDisplayAt :: Int -> Int -> Int -> Text -> Text
+sliceDisplayAt initial start width = Text.concat . reverse . snd . Text.foldl' step (initial, [])
+  where
+    end = max start (start + max 0 width)
+    step (col, out) c = (col + w, piece : out)
+      where
+        w = widthAt (Column col) c
+        lo = max start col
+        hi = min end (col + w)
+        visible = max 0 (hi - lo)
+        piece
+          | w == 0 && col >= start && col < end = Text.singleton c
+          | visible == 0 = Text.empty
+          | c == '\t' = Text.replicate visible " "
+          | Char.isControl c = Text.singleton '\xFFFD'
+          | w > visible = Text.replicate visible " "
+          | otherwise = Text.singleton c
 ```
 
 ### `src/Basilisk/Types.hs`
@@ -2435,6 +2458,9 @@ module Basilisk.Types
   ) where
 
 import Control.DeepSeq (NFData)
+import qualified Data.Map.Strict as Map
+import qualified Data.Sequence as Seq
+import Data.Sequence (ViewL (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics (Generic)
@@ -2501,7 +2527,7 @@ boundedRepeatCount k t
   | Text.null t = bounded k
   | otherwise   = min (bounded k) (max 0 (maxPasteChars `div` Text.length t))
 
-data PromptKind = ExCommand | Search
+data PromptKind = ExCommand | Search | SearchOperator !Int !Operator
   deriving (Eq, Show, Generic, NFData)
 
 -- | Whether the current insert session has already opened an undo
@@ -2638,10 +2664,29 @@ undoLimit = 1000
 serialise :: Editor -> Text
 serialise e
   | bBornEmpty (buffer e) && Text.null body = Text.empty
-  | otherwise = encodeEol (bEol (buffer e)) (body <> terminator)
+  | otherwise = Text.concat (renderRows rows breakMap 0)
   where
-    body       = toText (bDocument (buffer e))
-    terminator = if bFinalEol (buffer e) then Text.singleton '\n' else Text.empty
+    body = toText (bDocument (buffer e))
+    rows = Text.splitOn "\n" body
+    originals = bOriginalBreaks (buffer e)
+    originalStyles = Seq.fromList (map snd originals)
+    breakMap = Map.fromListWith (flip (Seq.><))
+      [(line, Seq.singleton ending) | (line, ending) <- originals]
+    renderRows [] _ _ = []
+    renderRows (line : rest) available i =
+      let hasBreak = not (null rest) || bFinalEol (buffer e)
+          (ending, nextMap) = takeEnding line i available
+          piece = line <> if hasBreak then eolText ending else Text.empty
+      in piece : renderRows rest nextMap (i + 1)
+    takeEnding line i available = case Map.lookup line available of
+      Just endings -> case Seq.viewl endings of
+        ending :< more -> (ending, if Seq.null more then Map.delete line available else Map.insert line more available)
+        EmptyL -> fallback i available
+      Nothing -> fallback i available
+    fallback i available = (maybe (bEol (buffer e)) id (Seq.lookup i originalStyles), available)
+    eolText LF = "\n"
+    eolText CRLF = "\r\n"
+    eolText CR = "\r"
 
 -- | What belongs to the file.
 --
@@ -2662,6 +2707,7 @@ data Buffer = Buffer
   , bPath      :: !(Maybe FilePath)
   , bStamp     :: !(Maybe Stamp)
   , bEol       :: !Eol
+  , bOriginalBreaks :: ![(Text, Eol)]
   , bFinalEol  :: !Bool
   , bBornEmpty :: !Bool
   , bReadOnly  :: !Bool
@@ -2675,6 +2721,7 @@ data Editor = Editor
   , mode     :: !Mode
   , cursor   :: !Cursor
   , top      :: !Int
+  , left     :: !Int
   , status   :: !(Maybe Text)
   , register :: !(Maybe Clip)
   , lastFind :: !(Maybe (Bool, Text))
@@ -2744,6 +2791,7 @@ newEditor p t = Editor
       , bPath      = p
       , bStamp     = Nothing
       , bEol       = LF
+      , bOriginalBreaks = []
       , bFinalEol  = True
       , bBornEmpty = True
       , bReadOnly  = False
@@ -2751,6 +2799,7 @@ newEditor p t = Editor
   , mode     = Normal
   , cursor   = Cursor (Column 0)
   , top      = 0
+  , left     = 0
   , status   = Nothing
   , register = Nothing
   , lastFind = Nothing
@@ -2834,6 +2883,10 @@ remember (InInsert (IInput t)) e = e { typing = typing e <> t }
 remember (InInsert IBackspace) e = e { typing = Text.dropEnd 1 (typing e) }
 remember (InInsert IEscape)    e = e { lastEdit = fmap (fmap (const (typing e))) (lastEdit e) }
 remember (InInsert (IMove _))  e = e
+remember (InPrompt PSubmit) e = case mode e of
+  Prompt (SearchOperator n op) pat ->
+    e { lastEdit = Just (NOperate n op (MFind False pat), Text.empty), typing = Text.empty }
+  _ -> e
 remember (InPrompt _) e = e
 
 repeatable :: NormalCmd -> Bool
@@ -3213,6 +3266,12 @@ submit ExCommand c e
 submit Search pat e
   | Text.null pat = pureT e { mode = Normal }
   | otherwise     = pureT (seek False 1 pat e { lastFind = Just (False, pat) })
+submit (SearchOperator n op) pat e
+  | Text.null pat = pureT e { mode = Normal }
+  | otherwise = case Doc.reach unicode n motion (document e) of
+      Doc.Chars 0 -> pureT e { status = Just ("not found: " <> pat) }
+      _ -> normal (NOperate n op motion) (e { lastFind = Just (False, pat), status = Nothing })
+  where motion = MFind False pat
 
 -- | Jump to the @k@th match. The motion produces an 'Doc.Upto', which
 -- is the reach shape that can name a position on another row -- the
@@ -3448,6 +3507,9 @@ normalKey st k ms
 normalKey st (Vty.KChar c) _
   | Just mk <- awaiting st     = complete st { awaiting = Nothing } (count st) (mk c)
   | Just mc <- awaitingChar st = emit (mc (count st) c)
+normalKey st (Vty.KChar '/') _
+  | Just (k, op) <- pending st =
+      emit (NEnterPrompt (SearchOperator (bounded (k * count st)) op))
 normalKey st (Vty.KChar c) _
   | prefix st == Just 'g', Just op <- gOperatorOf c =
       (initialKeyState { pending = Just (count st, op) }, Nothing)
@@ -3627,9 +3689,11 @@ module Basilisk.Render
 import qualified Data.Text as Text
 import qualified Graphics.Vty as Vty
 
-import Basilisk.Cursor (displayColumn, renderable)
+import Basilisk.Cursor (displayColumn, renderable, sliceDisplayAt, widthAt)
 import qualified Basilisk.Document as Doc
+import Basilisk.Syntax (Highlight (..), highlightHaskell, highlightMarkdown)
 import Basilisk.Types
+import System.FilePath (takeExtension)
 
 -- | @clampTop h r t@ is the least adjustment of @t@ that puts row @r@
 -- inside a window of @h@ rows.
@@ -3660,7 +3724,11 @@ body :: (Int, Int) -> Int
 body = max 1 . subtract 1 . snd . usable
 
 scroll :: (Int, Int) -> Editor -> Editor
-scroll wh e = e { top = clampTop (body wh) (Doc.cursorRow (document e)) (top e) }
+scroll wh e = e
+  { top = clampTop (body wh) (Doc.cursorRow (document e)) (top e)
+  , left = clampTop (max 1 (fst (usable wh))) cursorX (left e)
+  }
+  where cursorX = Doc.unColumn (displayColumn (Doc.beforeCursor (document e)))
 
 -- | Draws the window 'scroll' chose, then the status line, then places
 -- the terminal cursor. Assumes 'scroll' has already run for this frame;
@@ -3670,7 +3738,8 @@ render :: (Int, Int) -> Editor -> Vty.Picture
 render wh0 e = (Vty.picForImage (Vty.vertCat (rows <> [bar]))) { Vty.picCursor = cur }
   where
     (w, h) = usable wh0
-    rows   = map (Vty.text' Vty.defAttr . renderable) (Doc.window (top e) (body wh0) (document e))
+    rows = map (renderLine e w)
+      (Doc.window (top e) (body wh0) (document e))
     bar    = Vty.text' (Vty.defAttr `Vty.withStyle` Vty.reverseVideo)
                        (Text.justifyLeft w ' ' (Text.take w (renderable (statusLine e))))
     clamp lo hi = max lo . min hi
@@ -3683,8 +3752,31 @@ render wh0 e = (Vty.picForImage (Vty.vertCat (rows <> [bar]))) { Vty.picCursor =
     cur
       | uncurry (*) wh0 <= 0 = Vty.NoCursor
       | otherwise = Vty.Cursor
-          (clamp 0 (w - 1) (Doc.unColumn (displayColumn (Doc.beforeCursor (document e)))))
+          (clamp 0 (w - 1) (Doc.unColumn (displayColumn (Doc.beforeCursor (document e))) - left e))
           (clamp 0 (h - 1) (Doc.cursorRow (document e) - top e))
+
+renderLine :: Editor -> Int -> Text.Text -> Vty.Image
+renderLine e width line = Vty.horizCat (go (Doc.Column 0) tokens)
+  where
+    extension = maybe "" (takeExtension) (path e)
+    tokens
+      | extension == ".hs" || extension == ".lhs" = highlightHaskell line
+      | extension == ".md" || extension == ".markdown" = highlightMarkdown line
+      | otherwise = [(Plain, line)]
+    go :: Doc.Column -> [(Highlight, Text.Text)] -> [Vty.Image]
+    go _ [] = []
+    go col ((kind, text) : rest) =
+      Vty.text' (attribute kind) (sliceDisplayAt (Doc.unColumn col) (left e) width text) :
+        go (advance col text) rest
+    advance :: Doc.Column -> Text.Text -> Doc.Column
+    advance = Text.foldl' (\col c -> col + Doc.Column (widthAt col c))
+    attribute Plain = Vty.defAttr
+    attribute Keyword = Vty.defAttr `Vty.withForeColor` Vty.blue
+    attribute Constructor = Vty.defAttr `Vty.withForeColor` Vty.cyan
+    attribute Literal = Vty.defAttr `Vty.withForeColor` Vty.green
+    attribute Comment = Vty.defAttr `Vty.withForeColor` Vty.yellow
+    attribute Pragma = Vty.defAttr `Vty.withForeColor` Vty.magenta
+    attribute Heading = Vty.defAttr `Vty.withStyle` Vty.bold
 
 -- | One line, and the only channel the editor has to say anything: an
 -- open prompt if there is one, otherwise the last status message,
@@ -3698,9 +3790,122 @@ statusLine e = case mode e of
   where
     sigil ExCommand = ':'
     sigil Search    = '/'
+    sigil (SearchOperator _ _) = '/'
     idle = maybe (name <> flag) id (status e)
     name = maybe "[No Name]" Text.pack (path e)
     flag = (if readOnly e then " [RO]" else "") <> (if modified e then " [+]" else "")
+```
+
+### `src/Basilisk/Syntax.hs`
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | A small, pure lexical highlighter for Haskell source. It deliberately
+-- operates on visible lines and has no parser or editor-state dependency.
+module Basilisk.Syntax
+  ( Highlight (..)
+  , highlightHaskell
+  , highlightMarkdown
+  ) where
+
+import qualified Data.Set as Set
+import Data.Text (Text)
+import qualified Data.Text as Text
+import qualified Data.Char as Char
+
+data Highlight = Plain | Keyword | Constructor | Literal | Comment | Pragma | Heading
+  deriving (Eq, Show)
+
+highlightHaskell :: Text -> [(Highlight, Text)]
+highlightHaskell = lexLine
+
+highlightMarkdown :: Text -> [(Highlight, Text)]
+highlightMarkdown line
+  | "#" `Text.isPrefixOf` Text.stripStart line = [(Heading, line)]
+  | otherwise = [(Plain, line)]
+
+lexLine :: Text -> [(Highlight, Text)]
+lexLine input = case Text.uncons input of
+  Nothing -> []
+  Just (c, rest)
+    | lineComment input -> [(Comment, input)]
+    | "{-#" `Text.isPrefixOf` input -> takeThrough "#-}" Pragma input
+    | "{-" `Text.isPrefixOf` input -> takeBlock input
+    | c == '"' -> takeQuoted '"' input
+    | c == '\'' && hasClosingQuote rest -> takeQuoted '\'' input
+    | Char.isAlpha c || c == '_' -> tokeniseName input
+    | Char.isDigit c -> let (digits, suffix) = Text.span (\x -> Char.isAlphaNum x || x == '.' || x == '_') input
+                        in (Literal, digits) : lexLine suffix
+    | otherwise -> (Plain, Text.singleton c) : lexLine rest
+
+tokeniseName :: Text -> [(Highlight, Text)]
+tokeniseName input = (kind, word) : lexLine rest
+  where
+    (word, rest) = Text.span (\c -> Char.isAlphaNum c || c == '_' || c == '\'') input
+    kind
+      | word `Set.member` keywords = Keyword
+      | maybe False Char.isUpper (fst <$> Text.uncons word) = Constructor
+      | otherwise = Plain
+
+takeQuoted :: Char -> Text -> [(Highlight, Text)]
+takeQuoted quote input = (Literal, consumed) : lexLine rest
+  where
+    (consumed, rest) = quoted False [] input
+    quoted escaped acc text = case Text.uncons text of
+      Nothing -> (Text.pack (reverse acc), Text.empty)
+      Just (c, tailText)
+        | escaped -> quoted False (c : acc) tailText
+        | c == '\\' -> quoted True (c : acc) tailText
+        | c == quote -> (Text.pack (reverse (c : acc)), tailText)
+        | otherwise -> quoted False (c : acc) tailText
+
+hasClosingQuote :: Text -> Bool
+hasClosingQuote = maybe False (const True) . Text.find (== '\'')
+
+takeBlock :: Text -> [(Highlight, Text)]
+takeBlock input = (Comment, consumed) : lexLine rest
+  where
+    (parts, suffix) = block 0 [] input
+    consumed = Text.concat (reverse parts)
+    rest = suffix
+    block :: Int -> [Text] -> Text -> ([Text], Text)
+    block depth acc text
+      | "{-" `Text.isPrefixOf` text =
+          block (depth + 1) ("{-" : acc) (Text.drop 2 text)
+      | "-}" `Text.isPrefixOf` text =
+          let next = "-}" : acc
+          in if depth <= 1 then (next, Text.drop 2 text)
+             else block (depth - 1) next (Text.drop 2 text)
+      | otherwise = case Text.uncons text of
+          Nothing -> (acc, Text.empty)
+          Just (c, after) -> block depth (Text.singleton c : acc) after
+
+takeThrough :: Text -> Highlight -> Text -> [(Highlight, Text)]
+takeThrough ending kind input = (kind, consumed) : lexLine rest
+  where
+    (before, suffix) = Text.breakOn ending input
+    consumed
+      | Text.null suffix = input
+      | otherwise = before <> ending
+    rest = if Text.null suffix then Text.empty else Text.drop (Text.length ending) suffix
+
+keywords :: Set.Set Text
+keywords = Set.fromList
+  [ "as", "case", "class", "data", "default", "deriving", "do", "else"
+  , "forall", "foreign", "if", "import", "in", "infix", "infixl"
+  , "infixr", "instance", "let", "module", "newtype", "of", "then"
+  , "type", "where", "qualified", "hiding", "mdo", "family", "role"
+  , "pattern", "stock", "anyclass", "via"
+  ]
+
+lineComment :: Text -> Bool
+lineComment input = case Text.uncons (Text.drop 2 input) of
+  Nothing -> "--" `Text.isPrefixOf` input
+  Just (next, _) -> "--" `Text.isPrefixOf` input && not (symbol next)
+
+symbol :: Char -> Bool
+symbol c = c `elem` (":!#$%&*+./<=>?@\\^|-~" :: String)
 ```
 
 ### `src/Basilisk/File.hs`
@@ -3718,7 +3923,7 @@ module Basilisk.File
   , stampOf
   ) where
 
-import Control.Exception (IOException, bracketOnError, try)
+import Control.Exception (IOException, bracket, bracketOnError, try)
 import qualified Data.ByteString as ByteString
 import Data.Foldable (traverse_)
 import Data.Text (Text)
@@ -3738,7 +3943,7 @@ import System.Directory
   )
 import System.FilePath (takeDirectory, takeFileName)
 import System.Info (os)
-import System.IO (Handle, IOMode (WriteMode), hClose, hFlush, withBinaryFile)
+import System.IO (Handle, IOMode (WriteMode), hClose, hFlush, openBinaryFile)
 import System.Posix.Files (getFileStatus, linkCount)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, handleToFd, openFd)
 import System.Posix.Unistd (fileSynchronise)
@@ -3756,26 +3961,37 @@ import Basilisk.Types
 -- already set, so @:w@ writes it rather than asking for the name again.
 openFile :: FilePath -> IO Editor
 openFile fp = do
-  present  <- doesFileExist fp
-  mark     <- stampOf fp
-  writable <- if present then writable' fp else canCreate fp
-  buffer   <- if present then decoded <$> ByteString.readFile fp else pure (fresh "" platformEol)
-  pure (onBuffer (\b -> b { bStamp = mark, bReadOnly = not writable }) buffer)
-         { status = if writable then status buffer else Just "read-only" }
+  opened <- tryIO $ do
+    present <- doesFileExist fp
+    mark <- stampOf fp
+    canWrite <- if present then writable' fp else canCreate fp
+    contents <- if present then Just <$> ByteString.readFile fp else pure Nothing
+    pure (mark, canWrite, contents)
+  case opened of
+    Left err -> pure ((fresh "" platformEol) { status = Just (Text.pack ("open failed: " <> show err)) })
+    Right (mark, canWrite, contents) -> do
+      let buffer = maybe (fresh "" platformEol) decoded contents
+      pure (onBuffer (\b -> b { bStamp = mark, bReadOnly = not canWrite }) buffer)
+             { status = if canWrite then status buffer else Just "read-only" }
   where
     decoded    = either invalid valid . decodeUtf8'
-    invalid _  = (fresh "" platformEol) { status = Just "not valid UTF-8" }
+    invalid _ =
+      onBuffer (\b -> b { bReadOnly = True }) (fresh "" platformEol)
+        { status = Just "not valid UTF-8 (read-only)" }
     fresh t el = onBuffer (\b -> b { bEol = el }) (newEditor (Just fp) t)
     -- The terminator is stripped and recorded rather than kept as a
     -- final empty row, so no file grows a line the user cannot see.
     -- At most one is removed, so the round trip is exact.
-    valid raw = onBuffer (\b -> b { bFinalEol = ended, bBornEmpty = Text.null text })
-                          (fresh (strip text) el)
+    valid raw = onBuffer update (fresh text el)
       where
-        el    = detectEol raw
-        text  = decodeEol el raw
-        ended = Text.singleton '\n' `Text.isSuffixOf` text
-        strip = if ended then Text.dropEnd 1 else id
+        (text, breaks, ended) = splitEols raw
+        el = dominantEol breaks
+        update b = b
+          { bEol = el
+          , bOriginalBreaks = breaks
+          , bFinalEol = ended
+          , bBornEmpty = Text.null raw
+          }
 
 -- | A file's own convention wins; a file with no line endings at all
 -- takes the platform's, which is what every other editor does for a
@@ -3783,11 +3999,36 @@ openFile fp = do
 -- | A file's own convention wins. A lone carriage return with no line
 -- feed anywhere is the old-Mac convention, which is otherwise read as
 -- one enormous line full of replacement glyphs.
-detectEol :: Text -> Eol
-detectEol raw
-  | "\r\n" `Text.isInfixOf` raw                              = CRLF
-  | "\r" `Text.isInfixOf` raw && not ("\n" `Text.isInfixOf` raw) = CR
-  | otherwise                                                = platformEol
+splitEols :: Text -> (Text, [(Text, Eol)], Bool)
+splitEols = finish . scan [] []
+  where
+    scan rows breaks input =
+      let (line, separator) = Text.break (`elem` ['\r', '\n']) input
+          row = line : rows
+      in case Text.uncons separator of
+        Nothing -> (row, breaks, False)
+        Just ('\r', rest) -> case Text.uncons rest of
+          Just ('\n', after) -> separated row (line, CRLF) breaks after
+          _ -> separated row (line, CR) breaks rest
+        Just ('\n', rest) -> separated row (line, LF) breaks rest
+        Just (_, rest) -> separated row (line, LF) breaks rest
+    separated rows' ending breaks input
+      | Text.null input = (rows', ending : breaks, True)
+      | otherwise = scan rows' (ending : breaks) input
+    finish (rows, breaks, ended) =
+      (Text.intercalate "\n" (reverse rows), reverse breaks, ended)
+
+dominantEol :: [(Text, Eol)] -> Eol
+dominantEol [] = platformEol
+dominantEol breaks = fst (foldl' choose (firstEnding, firstCount) counts)
+  where
+    firstEnding = snd (headBreak breaks)
+    firstCount = count firstEnding
+    counts = [(ending, count ending) | ending <- [LF, CRLF, CR]]
+    count ending = length (filter ((== ending) . snd) breaks)
+    choose best@(_, n) candidate@(_, m) = if m > n then candidate else best
+    headBreak ((line, ending) : _) = (line, ending)
+    headBreak [] = (Text.empty, platformEol)
 
 -- | Whether the file can be written, checked at open rather than at
 -- the first @:w@ -- an hour of editing followed by "permission denied"
@@ -3870,13 +4111,19 @@ resolve p = either (const p) id <$> tryIO (canonicalizePath p)
 -- hardlinked file is written in place instead -- trading atomicity for
 -- the link, which is the trade vim makes too.
 isShared :: FilePath -> IO Bool
-isShared p = either (const False) ((> 1) . linkCount) <$> tryIO (getFileStatus p)
+isShared p = (> 1) . linkCount <$> getFileStatus p
 
 -- | The non-atomic path, used only where atomicity would destroy
 -- something else. Truncating an existing inode keeps every name that
 -- points at it.
 inPlace :: FilePath -> ByteString.ByteString -> IO ()
-inPlace p bytes = withBinaryFile p WriteMode (\h -> ByteString.hPut h bytes >> flushToDisk h)
+inPlace p bytes = bracketOnError (openBinaryFile p WriteMode) closeQuietly $ \h -> do
+  ByteString.hPut h bytes
+  flushToDisk h
+  where
+    closeQuietly h = do
+      _ <- tryIO (hClose h)
+      pure ()
 
 -- | Changed underneath us. A file that has since been deleted is not a
 -- conflict -- writing recreates it, which is what the user asked for.
@@ -3901,30 +4148,41 @@ atomically p bytes = do
   present <- doesFileExist p
   bracketOnError
     (openBinaryTempFile (takeDirectory p) (takeFileName p <> ".basilisk"))
-    (\(tmp, h) -> hClose h >> removeFile tmp)
+    cleanupTemp
     (\(tmp, h) -> do
         ByteString.hPut h bytes
         flushToDisk h
-        hClose h
         traverse_ (const (copyPermissions p tmp)) (guard' present)
+        syncFile tmp
         renameFile tmp p
         syncDir (takeDirectory p))
   where guard' b = if b then Just () else Nothing
+
+cleanupTemp :: (FilePath, Handle) -> IO ()
+cleanupTemp (tmp, h) = do
+  _ <- tryIO (hClose h)
+  _ <- tryIO (removeFile tmp)
+  pure ()
 
 -- | Force the bytes out of the kernel's cache before the rename.
 -- Without this the rename is atomic against a crash of this process
 -- but not against a loss of power, which can leave the new name
 -- pointing at an empty file.
 flushToDisk :: Handle -> IO ()
-flushToDisk h = hFlush h >> (tryIO (handleToFd h >>= sync) >>= either (const (pure ())) pure)
-  where sync fd = fileSynchronise fd
+flushToDisk h = do
+  hFlush h
+  bracket (handleToFd h) closeFd fileSynchronise
+
+-- | Permission copying changes inode metadata after the write handle
+-- has been synced, so sync the temporary inode once more before rename.
+syncFile :: FilePath -> IO ()
+syncFile p = bracket (openFd p ReadOnly defaultFileFlags) closeFd fileSynchronise
 
 -- | And the rename itself, which lives in the directory's own data.
 syncDir :: FilePath -> IO ()
-syncDir d = either (const ()) id <$> tryIO (go) >>= pure
+syncDir d = go
   where
-    go = bracketOnError (openFd d ReadOnly Nothing defaultFileFlags) closeFd
-           (\fd -> fileSynchronise fd >> closeFd fd)
+    go = bracket (openFd d ReadOnly defaultFileFlags) closeFd fileSynchronise
 ```
 
 ### `src/Basilisk/Loop.hs`
@@ -5840,6 +6098,24 @@ sources it is generated from, in one script that CI runs unmodified.
 
 ## What was run, and what it showed
 
+### Current source audit
+
+The checks below are historical results from an earlier source revision.
+They do not establish that the current checkout has just been built or
+tested. A compile-only build of the current checkout has completed with zero
+warnings; test suites and benchmarks were not run in this audit. The current
+audit corrected descriptor ownership during `fsync`,
+made file and directory sync failures visible, made hard-link inspection
+fail closed, and changed open and metadata IO failures into editor status
+messages. Invalid UTF-8 input is opened read-only, preventing an ordinary
+save from replacing undecodable source bytes with an empty buffer.
+
+The declared scope remains a single-buffer, Unix modal editor. The four
+features completed in this audit are described in the current architecture;
+parser-backed Haskell services and the other items in the limitation list
+remain unfinished work. Historical test results are not evidence for these
+new paths.
+
 Nothing below is a stub or a "should type-check" claim; the container
 has Hackage access and every dependency is the real one.
 
@@ -6356,12 +6632,6 @@ pty -- produced exactly the expected text.
 
 ## Known limitations, carried forward honestly
 
-- **Search does not compose with operators.** `d/pattern` is not
-  implemented: the pending operator does not survive opening the
-  prompt, because `Prompt` has nowhere to carry it. `/`, `n` and `N`
-  work as motions on their own.
-- **No horizontal scrolling.** The cursor column is clamped to the window
-  width, so a cursor past the right edge renders at the edge.
 - **Horizontal motion on a very long line is O(line)**, measured at
   roughly 8ms per keypress at 36,000 characters and 53ms at 144,000.
   Three separate passes over the line are responsible: `hop`,
@@ -6376,13 +6646,12 @@ pty -- produced exactly the expected text.
   configure it from until an options system exists. Threading a setting
   through `Step` and `Render` before that would be plumbing without a
   source.
-- **Line endings**: LF, CRLF and CR (old-Mac) are detected, decoded and
-  written back unchanged. **A file with mixed line endings is normalised** to the one that
-  predominates, as vim's `fileformat` does. Byte-for-byte round
-  tripping holds for files with consistent endings.
-- **A lone carriage return is content, not a line break.** Old-Mac
-  `fileformat` is not supported; such a file opens as one long line
-  with visible replacement glyphs rather than being misread.
+- **Mixed line endings are retained per original line.** New lines use
+  the predominant separator. Reordering identical duplicate lines can
+  make their individual separator assignment ambiguous.
+- **Syntax coloring is lexical and line-local.** Nested block comments
+  that continue across rows are not carried into the visible-row lexer;
+  there is no parser, diagnostics, auto-indent or LSP yet.
 - **`vty` is a hard dependency of `Basilisk-smoke`**, because the decoder
   tests use `Vty.Event`. The suite still needs no test framework, but the
   previous revision's claim that a smoke suite runs "on any machine with a
@@ -6407,11 +6676,9 @@ pty -- produced exactly the expected text.
 
 # Part 5 — What to build next
 
-Haskell-awareness (syntax highlighting, auto-indent, comments,
-structural navigation, LSP) is deliberately deferred: the current
-priority is finishing the vim-emulation model to a complete, rock-solid
-state before building anything on top of it. In the order that makes
-sense to take them:
+The editor now includes lexical Haskell and Markdown highlighting,
+horizontal scrolling, per-line mixed-ending preservation, and
+operator-pending search. Remaining work, in the order that makes sense:
 
 1. ~~Linewise paste~~ -- done. `Clip` records whether a cut was
    linewise or charwise, and `p`\/`P` dispatch on it (2.10c).
@@ -6429,14 +6696,13 @@ sense to take them:
    unchanged.
 6. **Visual mode.** Reuses `Upto`, which already exists for exactly
    this: a charwise span between an anchor and the cursor.
-7. **Search as an operator target.** `d/pattern` needs `Prompt` to
-   carry the operator it interrupted, which it does not today. `/`,
-   `n`, `N` already work as motions on their own.
+7. ~~Search as an operator target~~ -- the prompt carries the operator
+   and count, and `/pattern` completes a motion for it.
 8. **Ex ranges and `:s///`.** The most complex remaining parser in this
    list; everything above it is either done or a contained extension
    of an existing mechanism.
-9. **Horizontal scrolling.** A second hysteresis field beside `top`,
-   updated by a second `clampTop` with the same proof.
+9. ~~Horizontal scrolling~~ -- `left` tracks the viewport in display
+   columns, including wide glyphs and tab expansion.
 10. **The semantic milestone**, once the vim model above is complete:
     `render` becomes
     `(Int, Int) -> Editor -> SemanticSnapshot -> Picture`, with the

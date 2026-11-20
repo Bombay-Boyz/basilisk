@@ -68,6 +68,10 @@ remember (InInsert (IInput t)) e = e { typing = typing e <> t }
 remember (InInsert IBackspace) e = e { typing = Text.dropEnd 1 (typing e) }
 remember (InInsert IEscape)    e = e { lastEdit = fmap (fmap (const (typing e))) (lastEdit e) }
 remember (InInsert (IMove _))  e = e
+remember (InPrompt PSubmit) e = case mode e of
+  Prompt (SearchOperator n op) pat ->
+    e { lastEdit = Just (NOperate n op (MFind False pat), Text.empty), typing = Text.empty }
+  _ -> e
 remember (InPrompt _) e = e
 
 repeatable :: NormalCmd -> Bool
@@ -447,6 +451,12 @@ submit ExCommand c e
 submit Search pat e
   | Text.null pat = pureT e { mode = Normal }
   | otherwise     = pureT (seek False 1 pat e { lastFind = Just (False, pat) })
+submit (SearchOperator n op) pat e
+  | Text.null pat = pureT e { mode = Normal }
+  | otherwise = case Doc.reach unicode n motion (document e) of
+      Doc.Chars 0 -> pureT e { status = Just ("not found: " <> pat) }
+      _ -> normal (NOperate n op motion) (e { lastFind = Just (False, pat), status = Nothing })
+  where motion = MFind False pat
 
 -- | Jump to the @k@th match. The motion produces an 'Doc.Upto', which
 -- is the reach shape that can name a position on another row -- the

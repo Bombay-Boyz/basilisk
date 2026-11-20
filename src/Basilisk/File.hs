@@ -10,7 +10,7 @@ module Basilisk.File
   , stampOf
   ) where
 
-import Control.Exception (IOException, bracketOnError, try)
+import Control.Exception (IOException, bracket, bracketOnError, try)
 import qualified Data.ByteString as ByteString
 import Data.Foldable (traverse_)
 import Data.Text (Text)
@@ -30,7 +30,7 @@ import System.Directory
   )
 import System.FilePath (takeDirectory, takeFileName)
 import System.Info (os)
-import System.IO (Handle, IOMode (WriteMode), hClose, hFlush, withBinaryFile)
+import System.IO (Handle, IOMode (WriteMode), hClose, hFlush, openBinaryFile)
 import System.Posix.Files (getFileStatus, linkCount)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, handleToFd, openFd)
 import System.Posix.Unistd (fileSynchronise)
@@ -48,26 +48,37 @@ import Basilisk.Types
 -- already set, so @:w@ writes it rather than asking for the name again.
 openFile :: FilePath -> IO Editor
 openFile fp = do
-  present  <- doesFileExist fp
-  mark     <- stampOf fp
-  writable <- if present then writable' fp else canCreate fp
-  buffer   <- if present then decoded <$> ByteString.readFile fp else pure (fresh "" platformEol)
-  pure (onBuffer (\b -> b { bStamp = mark, bReadOnly = not writable }) buffer)
-         { status = if writable then status buffer else Just "read-only" }
+  opened <- tryIO $ do
+    present <- doesFileExist fp
+    mark <- stampOf fp
+    canWrite <- if present then writable' fp else canCreate fp
+    contents <- if present then Just <$> ByteString.readFile fp else pure Nothing
+    pure (mark, canWrite, contents)
+  case opened of
+    Left err -> pure ((fresh "" platformEol) { status = Just (Text.pack ("open failed: " <> show err)) })
+    Right (mark, canWrite, contents) -> do
+      let buffer = maybe (fresh "" platformEol) decoded contents
+      pure (onBuffer (\b -> b { bStamp = mark, bReadOnly = not canWrite }) buffer)
+             { status = if canWrite then status buffer else Just "read-only" }
   where
     decoded    = either invalid valid . decodeUtf8'
-    invalid _  = (fresh "" platformEol) { status = Just "not valid UTF-8" }
+    invalid _ =
+      onBuffer (\b -> b { bReadOnly = True }) (fresh "" platformEol)
+        { status = Just "not valid UTF-8 (read-only)" }
     fresh t el = onBuffer (\b -> b { bEol = el }) (newEditor (Just fp) t)
     -- The terminator is stripped and recorded rather than kept as a
     -- final empty row, so no file grows a line the user cannot see.
     -- At most one is removed, so the round trip is exact.
-    valid raw = onBuffer (\b -> b { bFinalEol = ended, bBornEmpty = Text.null text })
-                          (fresh (strip text) el)
+    valid raw = onBuffer update (fresh text el)
       where
-        el    = detectEol raw
-        text  = decodeEol el raw
-        ended = Text.singleton '\n' `Text.isSuffixOf` text
-        strip = if ended then Text.dropEnd 1 else id
+        (text, breaks, ended) = splitEols raw
+        el = dominantEol breaks
+        update b = b
+          { bEol = el
+          , bOriginalBreaks = breaks
+          , bFinalEol = ended
+          , bBornEmpty = Text.null raw
+          }
 
 -- | A file's own convention wins; a file with no line endings at all
 -- takes the platform's, which is what every other editor does for a
@@ -75,11 +86,36 @@ openFile fp = do
 -- | A file's own convention wins. A lone carriage return with no line
 -- feed anywhere is the old-Mac convention, which is otherwise read as
 -- one enormous line full of replacement glyphs.
-detectEol :: Text -> Eol
-detectEol raw
-  | "\r\n" `Text.isInfixOf` raw                              = CRLF
-  | "\r" `Text.isInfixOf` raw && not ("\n" `Text.isInfixOf` raw) = CR
-  | otherwise                                                = platformEol
+splitEols :: Text -> (Text, [(Text, Eol)], Bool)
+splitEols = finish . scan [] []
+  where
+    scan rows breaks input =
+      let (line, separator) = Text.break (`elem` ['\r', '\n']) input
+          row = line : rows
+      in case Text.uncons separator of
+        Nothing -> (row, breaks, False)
+        Just ('\r', rest) -> case Text.uncons rest of
+          Just ('\n', after) -> separated row (line, CRLF) breaks after
+          _ -> separated row (line, CR) breaks rest
+        Just ('\n', rest) -> separated row (line, LF) breaks rest
+        Just (_, rest) -> separated row (line, LF) breaks rest
+    separated rows' ending breaks input
+      | Text.null input = (rows', ending : breaks, True)
+      | otherwise = scan rows' (ending : breaks) input
+    finish (rows, breaks, ended) =
+      (Text.intercalate "\n" (reverse rows), reverse breaks, ended)
+
+dominantEol :: [(Text, Eol)] -> Eol
+dominantEol [] = platformEol
+dominantEol breaks = fst (foldl' choose (firstEnding, firstCount) counts)
+  where
+    firstEnding = snd (headBreak breaks)
+    firstCount = count firstEnding
+    counts = [(ending, count ending) | ending <- [LF, CRLF, CR]]
+    count ending = length (filter ((== ending) . snd) breaks)
+    choose best@(_, n) candidate@(_, m) = if m > n then candidate else best
+    headBreak ((line, ending) : _) = (line, ending)
+    headBreak [] = (Text.empty, platformEol)
 
 -- | Whether the file can be written, checked at open rather than at
 -- the first @:w@ -- an hour of editing followed by "permission denied"
@@ -162,13 +198,19 @@ resolve p = either (const p) id <$> tryIO (canonicalizePath p)
 -- hardlinked file is written in place instead -- trading atomicity for
 -- the link, which is the trade vim makes too.
 isShared :: FilePath -> IO Bool
-isShared p = either (const False) ((> 1) . linkCount) <$> tryIO (getFileStatus p)
+isShared p = (> 1) . linkCount <$> getFileStatus p
 
 -- | The non-atomic path, used only where atomicity would destroy
 -- something else. Truncating an existing inode keeps every name that
 -- points at it.
 inPlace :: FilePath -> ByteString.ByteString -> IO ()
-inPlace p bytes = withBinaryFile p WriteMode (\h -> ByteString.hPut h bytes >> flushToDisk h)
+inPlace p bytes = bracketOnError (openBinaryFile p WriteMode) closeQuietly $ \h -> do
+  ByteString.hPut h bytes
+  flushToDisk h
+  where
+    closeQuietly h = do
+      _ <- tryIO (hClose h)
+      pure ()
 
 -- | Changed underneath us. A file that has since been deleted is not a
 -- conflict -- writing recreates it, which is what the user asked for.
@@ -193,27 +235,38 @@ atomically p bytes = do
   present <- doesFileExist p
   bracketOnError
     (openBinaryTempFile (takeDirectory p) (takeFileName p <> ".basilisk"))
-    (\(tmp, h) -> hClose h >> removeFile tmp)
+    cleanupTemp
     (\(tmp, h) -> do
         ByteString.hPut h bytes
         flushToDisk h
-        hClose h
         traverse_ (const (copyPermissions p tmp)) (guard' present)
+        syncFile tmp
         renameFile tmp p
         syncDir (takeDirectory p))
   where guard' b = if b then Just () else Nothing
+
+cleanupTemp :: (FilePath, Handle) -> IO ()
+cleanupTemp (tmp, h) = do
+  _ <- tryIO (hClose h)
+  _ <- tryIO (removeFile tmp)
+  pure ()
 
 -- | Force the bytes out of the kernel's cache before the rename.
 -- Without this the rename is atomic against a crash of this process
 -- but not against a loss of power, which can leave the new name
 -- pointing at an empty file.
 flushToDisk :: Handle -> IO ()
-flushToDisk h = hFlush h >> (tryIO (handleToFd h >>= sync) >>= either (const (pure ())) pure)
-  where sync fd = fileSynchronise fd
+flushToDisk h = do
+  hFlush h
+  bracket (handleToFd h) closeFd fileSynchronise
+
+-- | Permission copying changes inode metadata after the write handle
+-- has been synced, so sync the temporary inode once more before rename.
+syncFile :: FilePath -> IO ()
+syncFile p = bracket (openFd p ReadOnly defaultFileFlags) closeFd fileSynchronise
 
 -- | And the rename itself, which lives in the directory's own data.
 syncDir :: FilePath -> IO ()
-syncDir d = either (const ()) id <$> tryIO (go) >>= pure
+syncDir d = go
   where
-    go = bracketOnError (openFd d ReadOnly defaultFileFlags) closeFd
-           (\fd -> fileSynchronise fd >> closeFd fd)
+    go = bracket (openFd d ReadOnly defaultFileFlags) closeFd fileSynchronise

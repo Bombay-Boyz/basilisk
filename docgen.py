@@ -21,6 +21,7 @@ MODULES = [
     ('Basilisk.Step',     'src/Basilisk/Step.hs',     'the pure transition function'),
     ('Basilisk.Decode',   'src/Basilisk/Decode.hs',   "vim's key grammar, as a Mealy machine"),
     ('Basilisk.Render',   'src/Basilisk/Render.hs',   'viewport, frame, status line'),
+    ('Basilisk.Syntax',   'src/Basilisk/Syntax.hs',   'Haskell and Markdown lexical highlighting'),
     ('Basilisk.File',     'src/Basilisk/File.hs',     'open and write, encoding-safe'),
     ('Basilisk.Loop',     'src/Basilisk/Loop.hs',     'the IO shell'),
     ('Main',              'app/Main.hs',              'argument parsing'),
@@ -66,10 +67,10 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: nine modules, {total} lines of code, zero warnings under
-the full flag set, all three test suites passing, and the editor has been
-run end to end against a real terminal. See Part 4 for exactly what that
-sentence does and does not cover.
+Status, in one line: ten modules, {total} lines of code. The verification
+results below are historical results from the last recorded full run; they
+are not a claim that the current checkout has just been built or tested.
+The current source audit is recorded in the latest revision notes.
 
 ---
 
@@ -122,6 +123,7 @@ data Editor = Editor
   , status   :: !(Maybe Text)
   , register :: !(Maybe Text)
   , top      :: !Int
+  , left     :: !Int
   , eol      :: !Eol
   }}
 ```
@@ -130,9 +132,9 @@ Each field is irreducible. `path` is the only record of which file a buffer
 came from. `version` bumps exactly when content changes, so a future
 semantic layer can detect staleness without living inside `Editor`.
 `status` is the editor's one channel to the user. `register` is what a
-delete or yank last reached. `top` is the scroll position, which is
-genuinely irreducible — see 2.8. `eol` is the file's own line ending, which
-is not recoverable from the decoded text — see 2.9.
+delete or yank last reached. `top` and `left` are the vertical and
+horizontal viewport positions. `eol` is the dominant separator used for
+new lines; original per-line separators live in the buffer (2.9).
 
 **There is exactly one construction site for this record**,
 `Types.newEditor`. That is deliberate: a strict record with ten fields is
@@ -446,14 +448,15 @@ decodes explicitly with `decodeUtf8'`, and the buffer records its own
 convention:
 
 ```haskell
-decodeEol :: Text -> Text          -- CRLF -> LF, on read
-encodeEol :: Eol -> Text -> Text   -- LF -> CRLF, on write
+splitEols :: Text -> (Text, [(Text, Eol)], Bool)
+serialise :: Editor -> Text
 ```
 
-`encodeEol el . decodeEol = id` on any text whose every `\\r` immediately
-precedes a `\\n`, which is exactly the set `decodeEol` produces. A file that
-does not exist opens as an empty buffer with its path already set. An
-invalid-UTF-8 file opens as an empty buffer with a status message.
+Each original line break is retained beside its source line. Save maps
+unchanged lines back to their original LF, CRLF or CR separator; newly
+introduced lines use the most frequent separator in the file. A file that
+does not exist opens as an empty buffer with its path already set. Invalid
+UTF-8 opens read-only with a status message.
 
 ## 2.9a Refusing to lose work
 
@@ -652,7 +655,7 @@ already clamped by the algebra: a `Chars` reach against the line, a
 | motions `h j k l w b e W B 0 ^ $ gg G` | one equation each in `reach` |
 | `f t F T` (find-char) | `MTo`, a one-shot linear scan for the target |
 | `; ,` (repeat find-char) | `Doc.reachToFrom`, reusing `MTo`'s own search (2.10e) |
-| `{{ }}` (paragraph), `%` (bracket match), `\|` (column) | `MParagraph`, `MMatch`, `MColumn` |
+| `{{ }}` (paragraph), `%` (bracket match), `\\|` (column) | `MParagraph`, `MMatch`, `MColumn` |
 | search `/`, `n`, `N` | one equation, producing an `Upto` |
 | operators `d y c` | one equation each in `operate` |
 | `x X D C s S` | operator applied to a motion that already exists -- no new command |
@@ -661,10 +664,10 @@ already clamped by the algebra: a `Chars` reach against the line, a
 | `u` and `Ctrl-R` with counts | one signed `travel` |
 | `J` with counts | one row-splicing primitive |
 | `.` (repeat) | replays the last change through `step` itself (2.10d) |
-| `~`, `gu gU g~` | `ToggleCase`\/`ToLower`\/`ToUpper`, one equation each in `operate` (2.10f) |
-| `>` `<` | `Indent`\/`Dedent`, forced linewise regardless of motion (2.10f) |
+| `~`, `gu gU g~` | `ToggleCase`\\/`ToLower`\\/`ToUpper`, one equation each in `operate` (2.10f) |
+| `>` `<` | `Indent`\\/`Dedent`, forced linewise regardless of motion (2.10f) |
 | `r` | `replaceChars`, clamped to the line, cursor on the last replaced character |
-| `ZZ` `ZQ` | aliases for `writeQuit`\/`quit True` -- no new logic, two new entry points |
+| `ZZ` `ZQ` | aliases for `writeQuit`\\/`quit True` -- no new logic, two new entry points |
 | counted insert (`3ifoo<Esc>`) | `insertRepeat` on `Editor`, expanded once at `IEscape` |
 | `R` (replace mode) | `Replace ![Maybe Text]`, a mode-local undo stack (2.10f) |
 | `: /`, `:w :w! :q :q! :wq :x` | prompt mode |
@@ -683,7 +686,7 @@ adjustment is on the operator side, and that is forced rather than
 chosen -- retreating after the move would make `2e` differ from `e e`,
 because the retreat changes where the second step starts. `reach`
 therefore means exactly where the cursor goes, and an operator asks for
-one cluster more. And `f`\/`t` are the one motion for which the
+one cluster more. And `f`\\/`t` are the one motion for which the
 counted-displacement law (2.11's "a counted motion equals that many
 single motions") does not hold: a search that fails leaves the cursor
 where the *last successful* step put it, which can differ from failing
@@ -721,14 +724,14 @@ live typing, not merely reuse it.**
 
 ## 2.10e Repeating a search without repeating the search
 
-`;` and `,` repeat the last `f`\/`t`\/`F`\/`T`, which is `MTo`'s own
+`;` and `,` repeat the last `f`\\/`t`\\/`F`\\/`T`, which is `MTo`'s own
 search run again from the cursor's current position -- `;` in the
 remembered direction, `,` reversed. The state this needs is `lastTo ::
 Maybe Motion`, recorded at the same single call site `remember` already
 uses for `.`, and exhaustive in the same way: a value of any other
 shape is a type the field cannot hold.
 
-One case does not reduce to "run the same motion again." `t`\/`T` stop
+One case does not reduce to "run the same motion again." `t`\\/`T` stop
 one character short of their target, so a cursor that has just landed
 there is sitting immediately beside it -- and repeating the identical
 search from that position re-finds the very same occurrence and never
@@ -776,18 +779,18 @@ caught that the fix had not actually landed.
 
 ## 2.10f Case and indent operators, and the "did this change anything" rule
 
-`ToLower`\/`ToUpper`\/`ToggleCase`\/`Indent`\/`Dedent` are five more
+`ToLower`\\/`ToUpper`\\/`ToggleCase`\\/`Indent`\\/`Dedent` are five more
 equations in `operate`, exactly as 2.4a's design claims a new operator
-costs. Two of them, though, needed something `Delete`\/`Yank`\/`Change`
+costs. Two of them, though, needed something `Delete`\\/`Yank`\\/`Change`
 never did: a primitive that *rewrites* a span rather than cutting it,
 and a rule for when an operator must ignore the motion it was given.
 
 **The transform primitives.** `transformLineZ` rewrites a signed
 charwise span in place, leaving the cursor just past it -- vim's
-convention for `~`\/`gu`\/`gU`\/`g~`, and deliberately not `excise`'s
+convention for `~`\\/`gu`\\/`gU`\\/`g~`, and deliberately not `excise`'s
 convention of leaving the split point at whichever side already
 borders what remains. `transformRows` is the same idea applied to whole
-rows, shared by the linewise case operators and by indent\/dedent,
+rows, shared by the linewise case operators and by indent\\/dedent,
 which differ only in *which* row-rewriting function they pass it.
 
 **Forced linewise.** Vim's own rule: `>` and `<` always act on whole
@@ -824,7 +827,7 @@ than trusting that a compiling fix was a correct one -- the same lesson
 two positions on repeated use, because both reached their target
 through `toward`, whose snap direction compares the target to the
 *current* cursor -- right for a word motion, whose raw target moves
-with the cursor, wrong for `^`\/`|`, whose target is an absolute column
+with the cursor, wrong for `^`\\/`|`, whose target is an absolute column
 independent of it. `towardAbsolute` snaps in one fixed direction
 regardless of where the cursor is, which is what makes the motion a
 pure function of the line and the target -- and therefore genuinely
@@ -984,24 +987,17 @@ Tests, which do not count against the ceiling:
 ## 2.14 Deliberately out of scope for v1
 
 Vimscript or Lua, a plugin framework, GUI/mouse interaction, a terminal
-emulator, session management, a custom parser or LSP, and search-and-jump
-(`/` opens and accumulates, but `Submit` on a search is a no-op).
-
-Named registers (`"a`, `"b`) remain deferred; the single implicit register
-is implemented. **Paste remains charwise**: `dd` then `p` inserts the line's
-text inline rather than opening a new line, which is visible in the
-end-to-end transcript in Part 4. Linewise paste needs the register to
-record *how* its text was taken, which is one bit on `register` and one
-clause in the paste handler — scoped, not architectural.
-
-Horizontal scrolling is not implemented; the cursor column is clamped to
-the window width.
+emulator, session management, a full Haskell parser and LSP integration.
+Haskell and Markdown have lexical highlighting; parser-backed diagnostics,
+auto-indent, comments and structural navigation remain future work.
+Named registers, macros, text objects, visual mode, ex ranges and
+substitutions are also deferred.
 
 ---
 
 # Part 3 — Code
 
-All nine modules below compile under
+All ten modules below compile under
 `-Wall -Wcompat -Wincomplete-patterns -Wincomplete-uni-patterns
 -Wincomplete-record-updates -Werror=incomplete-patterns
 -Wredundant-constraints -O2` with **zero warnings**, on GHC 9.4.7. Part 4
@@ -1050,6 +1046,24 @@ complexity benchmarks, and a check that this document still matches the
 sources it is generated from, in one script that CI runs unmodified.
 
 ## What was run, and what it showed
+
+### Current source audit
+
+The checks below are historical results from an earlier source revision.
+They do not establish that the current checkout has just been built or
+tested. A compile-only build of the current checkout has completed with zero
+warnings; test suites and benchmarks were not run in this audit. The current
+audit corrected descriptor ownership during `fsync`,
+made file and directory sync failures visible, made hard-link inspection
+fail closed, and changed open and metadata IO failures into editor status
+messages. Invalid UTF-8 input is opened read-only, preventing an ordinary
+save from replacing undecodable source bytes with an empty buffer.
+
+The declared scope remains a single-buffer, Unix modal editor. The four
+features completed in this audit are described in the current architecture;
+parser-backed Haskell services and the other items in the limitation list
+remain unfinished work. Historical test results are not evidence for these
+new paths.
 
 Nothing below is a stub or a "should type-check" claim; the container
 has Hackage access and every dependency is the real one.
@@ -1186,7 +1200,7 @@ reasoned about and declared fine:
 
 ## Defects found hardening the vocabulary pass
 
-A second batch of Phase 2 work -- `.`, `{{`\/`}}`, `f`\/`t`\/`F`\/`T`, `W`\/`B`
+A second batch of Phase 2 work -- `.`, `{{`\\/`}}`, `f`\\/`t`\\/`F`\\/`T`, `W`\\/`B`
 -- had been built but not yet run when a session interruption occurred.
 Restarting it, the property suite hung outright rather than failing.
 Five distinct defects were behind that, found in the order below, each
@@ -1199,7 +1213,7 @@ by running the code and measuring rather than reasoning about it:
     because nothing had ever cleared it. Forty presses would have
     exhausted memory. Fixed by clearing the accumulator before a
     replay's synthetic typing runs.
-14. **`{{`\/`}}` (paragraph motion) had no fixed-point guard**, unlike
+14. **`{{`\\/`}}` (paragraph motion) had no fixed-point guard**, unlike
     every other counted motion in this module, so a count in the
     quintillions -- generated, not typed -- would loop that many times.
     It also recomputed the *entire document as a list* on every single
@@ -1216,7 +1230,7 @@ by running the code and measuring rather than reasoning about it:
     asked to guard a product, only a count. `boundedRepeatCount` bounds
     the output size directly; the same scenario now runs in 0.3
     seconds.
-16. **`f`\/`t`\/`F`\/`T` located their target with `Text.index` inside a
+16. **`f`\\/`t`\\/`F`\\/`T` located their target with `Text.index` inside a
     scan of the whole line.** Under `text-2.0`'s UTF-8 representation,
     `Text.index i` costs `O(i)`, not `O(1)` as it did under the older
     UTF-16 encoding; calling it once per candidate position made the
@@ -1240,7 +1254,7 @@ by running the code and measuring rather than reasoning about it:
     only one of the two things the loop consumes. Confirmed genuinely
     linear afterward, and the original 20,000-word line that exceeded
     sixty seconds now runs in 0.26.
-18. **One property was over-stated, not broken.** `f`\/`t` motions that
+18. **One property was over-stated, not broken.** `f`\\/`t` motions that
     fail to find enough occurrences leave the cursor exactly where a
     *previous successful* step left it -- which can genuinely differ
     from failing outright from the motion's starting position, since a
@@ -1255,7 +1269,7 @@ by running the code and measuring rather than reasoning about it:
 ## Defects found implementing `;` and `,`
 
 19. **The repeat-short nudge had its sign backwards.** `;` repeating a
-    `t`\/`T` that had already stopped one character short of its target
+    `t`\\/`T` that had already stopped one character short of its target
     needs to search from one step further in the direction of travel,
     or it immediately re-finds the occurrence it is already sitting
     beside. The first implementation nudged the wrong way, so every
@@ -1269,8 +1283,8 @@ by running the code and measuring rather than reasoning about it:
     and `prop_repeat_to_never_gets_stuck` now holds the fix in place.
 20. **A worked example asserted the wrong equivalence.** `3;` was
     written to expect the same result as two individual presses of
-    `;`, which does not hold for the same reason `MLine`\/`MGotoLine`\/
-    `MFind`\/`MTo` are already excluded from the counted-displacement
+    `;`, which does not hold for the same reason `MLine`\\/`MGotoLine`\\/
+    `MFind`\\/`MTo` are already excluded from the counted-displacement
     law: a counted `MTo` is one absolute "nth occurrence from here"
     lookup, not iteration, so a count that exceeds the number of
     further occurrences correctly stays exactly where it started even
@@ -1299,13 +1313,13 @@ by running the code and measuring rather than reasoning about it:
     the project's history that a plausible-looking fix is not a
     verified one; only re-running the failing case closed it.
 22. **Searching for a combining mark or zero-width joiner as a bare
-    `f`\/`t` target is not a scenario any real keystroke produces** -- a
+    `f`\\/`t` target is not a scenario any real keystroke produces** -- a
     terminal composes a combining mark onto the character before it
     before Basilisk ever sees an event for it -- and the property
     written to check `;` never has stuck assumed every character was
     equally addressable. `prop_repeat_to_never_gets_stuck` now excludes
     characters `widthAt` reports as zero columns wide, matching the one
-    class of target a real `f`\/`t` cannot be asked to find, and the
+    class of target a real `f`\\/`t` cannot be asked to find, and the
     reasoning is written next to the restriction rather than left as a
     bare filter.
 
@@ -1313,10 +1327,10 @@ All three suites and the benchmarks were re-run to completion after
 each fix, not merely re-attempted: 36 properties, 150 worked examples,
 189,000 totality combinations, and no scaling regression.
 
-## Defects found implementing `~`, `gu`\/`gU`\/`g~`, `>`\/`<`, `r`, `ZZ`\/`ZQ`
+## Defects found implementing `~`, `gu`\\/`gU`\\/`g~`, `>`\\/`<`, `r`, `ZZ`\\/`ZQ`
 
 23. **`guu`, `gUU` and `g~~` produced nothing at all.** The doubled-
-    operator check only consulted the table for `d`\/`y`\/`c`\/`>`\/`<`,
+    operator check only consulted the table for `d`\\/`y`\\/`c`\\/`>`\\/`<`,
     so the second letter of `guu` was read as the unrelated *undo*
     command while a case operator was still pending, and the existing
     "a command key abandons a pending operator" rule (itself a
@@ -1344,13 +1358,13 @@ each fix, not merely re-attempted: 36 properties, 150 worked examples,
     register.** `prop_reached_span_becomes_the_register` was written
     before case and indent operators existed, when that assumption
     happened to be true of every operator there was. Restricted to
-    `Delete`\/`Yank`\/`Change`, which is what actually touches the
+    `Delete`\\/`Yank`\\/`Change`, which is what actually touches the
     register -- matching vim's own rule, which `Basilisk.Step.apply`
     already encoded correctly; only the property had not caught up.
     The same property's oracle also needed the forced-linewise
     conversion applied to its own span computation, or it would
     disagree with what `Basilisk.Step.normal`'s `NOperate` clause
-    actually computes for `>`\/`<` given a charwise motion.
+    actually computes for `>`\\/`<` given a charwise motion.
 26. **`^` and `|` could oscillate on repeated use.** Both compute an
     absolute target independent of the cursor's current position, but
     reached it through `toward`, whose snap direction is chosen by
@@ -1361,7 +1375,7 @@ each fix, not merely re-attempted: 36 properties, 150 worked examples,
     same column against a now-different cursor and snap the *other*
     way, oscillating between two boundaries instead of staying put --
     which real vim's `^` and `|` never do. Narrow to trigger (needs a
-    combining mark straddling the blank\/non-blank boundary, or sitting
+    combining mark straddling the blank\\/non-blank boundary, or sitting
     exactly at a counted column) but a genuine idempotence defect, not
     only a count's interpretation, and found directly by the existing
     counted-displacement property rather than a new one -- extending
@@ -1452,7 +1466,7 @@ functions:
     commit only the final result, and guard both the empty-input and
     overwrite-equals-original cases explicitly.
 31. **Backspacing in `R` could also report a false change**, for a
-    reason specific to it: `Doc.restoreChar`\/`Doc.backspace` cannot
+    reason specific to it: `Doc.restoreChar`\\/`Doc.backspace` cannot
     know in advance whether the text they restore happens to coincide
     with what the document already shows, so the check has to happen
     *after* restoring, not before -- the one place in this whole class
@@ -1518,13 +1532,13 @@ pty -- produced exactly the expected text.
    line (2.9b). Motions `b e ^ gg G`, the `c` operator, the derived
    `x X D C s S`, `J`, and charwise/linewise `p` and `P` (2.10c).
    Search (`/`, `n`, `N`), the `Upto` reach shape it needed, and the
-   `Buffer`\/`Editor` state split (34).
-7. **Vocabulary hardening pass.** `.` (repeat), `f`\/`t`\/`F`\/`T`,
-   `{{`\/`}}`, `%`, `|`, and `W`\/`B` added. Five defects found running
+   `Buffer`\\/`Editor` state split (34).
+7. **Vocabulary hardening pass.** `.` (repeat), `f`\\/`t`\\/`F`\\/`T`,
+   `{{`\\/`}}`, `%`, `|`, and `W`\\/`B` added. Five defects found running
    this batch for the first time after a session interruption -- an
    exponential blowup in `.`'s replay buffer, a missing fixed-point
    guard and an `O(document)` lookup in paragraph motion, a paste bound
-   on the wrong quantity, an `O(n^2)` scan in `f`\/`t` from
+   on the wrong quantity, an `O(n^2)` scan in `f`\\/`t` from
    `text-2.0`'s UTF-8 representation, and a subtler `O(n^2)` left over
    in word motion after the first fix to it -- documented in full where
    Part 4 records what running the suite actually found.
@@ -1533,8 +1547,8 @@ pty -- produced exactly the expected text.
    implementation (2.10e). A sign error in the repeat-short nudge, and
    one worked example asserting the wrong equivalence for a counted
    repeat, are both recorded in Part 4.
-9. **Tier 1 of the vim-completeness pass.** `~`, `gu`\/`gU`\/`g~`,
-   `>`\/`<`, `r`, `ZZ`\/`ZQ` -- five new equations in `operate` (2.10f)
+9. **Tier 1 of the vim-completeness pass.** `~`, `gu`\\/`gU`\\/`g~`,
+   `>`\\/`<`, `r`, `ZZ`\\/`ZQ` -- five new equations in `operate` (2.10f)
    plus two small aliases, in keeping with the project's stated cost
    for a new operator. Found implementing it: the doubled-operator
    check did not generalise across the two tables an operator can now
@@ -1565,12 +1579,6 @@ pty -- produced exactly the expected text.
 
 ## Known limitations, carried forward honestly
 
-- **Search does not compose with operators.** `d/pattern` is not
-  implemented: the pending operator does not survive opening the
-  prompt, because `Prompt` has nowhere to carry it. `/`, `n` and `N`
-  work as motions on their own.
-- **No horizontal scrolling.** The cursor column is clamped to the window
-  width, so a cursor past the right edge renders at the edge.
 - **Horizontal motion on a very long line is O(line)**, measured at
   roughly 8ms per keypress at 36,000 characters and 53ms at 144,000.
   Three separate passes over the line are responsible: `hop`,
@@ -1585,13 +1593,12 @@ pty -- produced exactly the expected text.
   configure it from until an options system exists. Threading a setting
   through `Step` and `Render` before that would be plumbing without a
   source.
-- **Line endings**: LF, CRLF and CR (old-Mac) are detected, decoded and
-  written back unchanged. **A file with mixed line endings is normalised** to the one that
-  predominates, as vim's `fileformat` does. Byte-for-byte round
-  tripping holds for files with consistent endings.
-- **A lone carriage return is content, not a line break.** Old-Mac
-  `fileformat` is not supported; such a file opens as one long line
-  with visible replacement glyphs rather than being misread.
+- **Mixed line endings are retained per original line.** New lines use
+  the predominant separator. Reordering identical duplicate lines can
+  make their individual separator assignment ambiguous.
+- **Syntax coloring is lexical and line-local.** Nested block comments
+  that continue across rows are not carried into the visible-row lexer;
+  there is no parser, diagnostics, auto-indent or LSP yet.
 - **`vty` is a hard dependency of `Basilisk-smoke`**, because the decoder
   tests use `Vty.Event`. The suite still needs no test framework, but the
   previous revision's claim that a smoke suite runs "on any machine with a
@@ -1616,36 +1623,33 @@ pty -- produced exactly the expected text.
 
 # Part 5 — What to build next
 
-Haskell-awareness (syntax highlighting, auto-indent, comments,
-structural navigation, LSP) is deliberately deferred: the current
-priority is finishing the vim-emulation model to a complete, rock-solid
-state before building anything on top of it. In the order that makes
-sense to take them:
+The editor now includes lexical Haskell and Markdown highlighting,
+horizontal scrolling, per-line mixed-ending preservation, and
+operator-pending search. Remaining work, in the order that makes sense:
 
 1. ~~Linewise paste~~ -- done. `Clip` records whether a cut was
-   linewise or charwise, and `p`\/`P` dispatch on it (2.10c).
+   linewise or charwise, and `p`\\/`P` dispatch on it (2.10c).
 2. ~~`.`, find-char repeat, case and indent operators~~ -- done (2.10d,
    2.10e, 2.10f).
 3. ~~`R` (replace mode) and counts on insert~~ -- done. `Replace
    ![Maybe Text]` for `R` (2.10f); `insertRepeat` on `Editor` for
    counted insert, expanded once at `IEscape`. Tier 1 is complete.
-4. **Marks, named\/numbered registers, macros.** Each needs one small
-   new piece of state, in the same shape `;`\/`,` and `.` already
+4. **Marks, named\\/numbered registers, macros.** Each needs one small
+   new piece of state, in the same shape `;`\\/`,` and `.` already
    needed; macros can plausibly reuse `.`'s replay-through-`step`
    mechanism rather than a second implementation of repetition.
-5. **Text objects** (`iw`, `i"`, `i(`, ...). New "inside"\/"around"
+5. **Text objects** (`iw`, `i"`, `i(`, ...). New "inside"\\/"around"
    reach-producing functions, consumed by the existing `operate`
    unchanged.
 6. **Visual mode.** Reuses `Upto`, which already exists for exactly
    this: a charwise span between an anchor and the cursor.
-7. **Search as an operator target.** `d/pattern` needs `Prompt` to
-   carry the operator it interrupted, which it does not today. `/`,
-   `n`, `N` already work as motions on their own.
+7. ~~Search as an operator target~~ -- the prompt carries the operator
+   and count, and `/pattern` completes a motion for it.
 8. **Ex ranges and `:s///`.** The most complex remaining parser in this
    list; everything above it is either done or a contained extension
    of an existing mechanism.
-9. **Horizontal scrolling.** A second hysteresis field beside `top`,
-   updated by a second `clampTop` with the same proof.
+9. ~~Horizontal scrolling~~ -- `left` tracks the viewport in display
+   columns, including wide glyphs and tab expansion.
 10. **The semantic milestone**, once the vim model above is complete:
     `render` becomes
     `(Int, Int) -> Editor -> SemanticSnapshot -> Picture`, with the
