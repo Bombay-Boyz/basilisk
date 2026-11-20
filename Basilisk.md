@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: ten modules, 1941 lines of code. The verification
+Status, in one line: ten modules, 1960 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -926,21 +926,21 @@ prototype, measured, before adoption.
 
 | Module | Responsibility | Code | With comments |
 |---|---|---|---|
-| `Basilisk.Document` | zipper, coordinates, the reach algebra | 595 | 1156 |
+| `Basilisk.Document` | zipper, coordinates, the reach algebra | 612 | 1180 |
 | `Basilisk.Cursor` | the sticky column, ICU display width | 89 | 165 |
-| `Basilisk.Types` | modes, tagged commands, effects, editor | 231 | 405 |
-| `Basilisk.Step` | the pure transition function | 296 | 562 |
+| `Basilisk.Types` | modes, tagged commands, effects, editor | 234 | 407 |
+| `Basilisk.Step` | the pure transition function | 295 | 534 |
 | `Basilisk.Decode` | vim's key grammar, as a Mealy machine | 180 | 284 |
 | `Basilisk.Render` | viewport, frame, status line | 82 | 130 |
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
 | `Basilisk.File` | open and write, encoding-safe | 170 | 274 |
 | `Basilisk.Loop` | the IO shell and save-time formatting | 160 | 192 |
 | `Main` | argument parsing | 47 | 55 |
-| **Total** | | **1941** | |
+| **Total** | | **1960** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **1941 lines against a 3,000 ceiling**, leaving 1059
+specified — is **1960 lines against a 3,000 ceiling**, leaving 1040
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -951,9 +951,9 @@ Tests, which do not count against the ceiling:
 | File | Purpose | Code | With comments |
 |---|---|---|---|
 | `test/Laws.hs` | the laws, as Hedgehog properties | 426 | 718 |
-| `test/Gen.hs` | Unicode-hostile generators | 132 | 183 |
-| `test/Smoke.hs` | worked examples, in vim's vocabulary | 473 | 543 |
-| `test/Exhaustive.hs` | totality sweep | 52 | 65 |
+| `test/Gen.hs` | Unicode-hostile generators | 135 | 186 |
+| `test/Smoke.hs` | worked examples, in vim's vocabulary | 483 | 553 |
+| `test/Exhaustive.hs` | totality sweep | 53 | 66 |
 | `test/Formatter.hs` | save-time Haskell formatter integration | 70 | 75 |
 
 ## 2.14 Deliberately out of scope for v1
@@ -1153,6 +1153,8 @@ module Basilisk.Document
   , replaceChars
   , overwriteChar
   , restoreChar
+  , replaceNewline
+  , restoreNewline
   , joinLines
     -- * Normal-mode retraction (2.5)
   , clampGap
@@ -2193,6 +2195,28 @@ restoreChar mOriginal d = d { here = LineZ (Text.dropEnd 1 b) (maybe a (<> a) mO
     b = before (here d)
     a = after (here d)
 
+-- | In Replace mode, Enter replaces the first grapheme under the cursor
+-- with a line break. The old grapheme is returned for the mode's undo
+-- stack; at end of line there is nothing to restore.
+replaceNewline :: Unicode -> Document -> (Document, Maybe Text)
+replaceNewline u d = (fromMaybe d (insert "\n" shortened), original)
+  where
+    suffix = after (here d)
+    width = case clusters u suffix of
+      _ : next : _ -> next
+      _ -> Text.length suffix
+    original = if Text.null suffix then Nothing else Just (Text.take width suffix)
+    shortened = d { here = (here d) { after = Text.drop width suffix } }
+
+-- | Undo a Replace-mode newline by joining its rows and restoring the
+-- grapheme it replaced at the cursor, leaving the cursor before it.
+restoreNewline :: Unicode -> Maybe Text -> Document -> Document
+restoreNewline u original d = case backspace u d of
+  Nothing -> d
+  Just joined -> case original of
+    Nothing -> joined
+    Just cluster -> joined { here = (here joined) { after = cluster <> after (here joined) } }
+
 -- | @r@: replace the next @n@ characters with @c@, clamped to the
 -- line, leaving the cursor on the /last/ replaced character -- vim's
 -- own convention, and deliberately not @~@'s\/@gu@'s "cursor past the
@@ -2443,6 +2467,7 @@ module Basilisk.Types
     -- * Modes and commands
   , PromptKind (..)
   , Session (..)
+  , ReplaceUndo (..)
   , Mode (..)
   , InsertAnchor (..)
   , NormalCmd (..)
@@ -2567,12 +2592,13 @@ data Session = Fresh | Dirty
 -- command-buffer field that could drift out of sync with whether a
 -- prompt is open: it is structurally impossible for a buffer to exist in
 -- 'Normal' or 'Insert'.
--- | 'Replace's list is a stack of what each typed character overwrote:
--- @Just cluster@ when there was one to restore, @Nothing@ when typing
--- only extended the line. Carried in the mode for the same reason the
--- prompt buffer and the insert session's count are: it means something
--- only while a replace session is open.
-data Mode = Normal | Insert !Session | Prompt !PromptKind !Text | Replace ![Maybe Text]
+-- | Undo information for one Replace-mode keystroke. A newline records
+-- the grapheme it displaced as well as the fact that it split a row.
+data ReplaceUndo = ReplaceChar !(Maybe Text) | ReplaceNewline !(Maybe Text)
+  deriving (Eq, Show, Generic, NFData)
+
+-- | Replace-mode's undo stack is scoped to the active replace session.
+data Mode = Normal | Insert !Session | Prompt !PromptKind !Text | Replace ![ReplaceUndo]
   deriving (Eq, Show, Generic, NFData)
 
 data InsertAnchor = Before | After | LineBelow | LineAbove
@@ -2858,7 +2884,6 @@ module Basilisk.Step
   ) where
 
 import Data.Bifunctor (first)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 
@@ -3167,16 +3192,8 @@ restart e = case mode e of
 -- 'Session' flag to read for 'Replace' and the stack's emptiness is
 -- exactly that same question answered a different way.
 --
--- A newline is never folded into 'Doc.overwriteChar': that function
--- appends its character directly to a 'LineZ' half, and a 'LineZ' may
--- never contain one -- the exact invariant 'Doc.insert' already solves
--- for ordinary typing by routing a newline through a line split
--- instead. Pressing Enter in Replace mode opens a line the same way,
--- never "overwriting" the next line's first character the way a
--- plain keystroke overwrites one; a stack entry of @Just "\\n"@
--- records that this step was a split rather than an overwrite, which
--- is unambiguous because an actual overwritten cluster can never equal
--- a newline for the same reason the split exists.
+-- Enter replaces the next grapheme, or opens a row when there is no
+-- grapheme under the cursor.
 -- | Processes every character of @t@ against the document directly,
 -- committing only once at the end rather than once per character. An
 -- earlier version called 'commit'\/'commitTo' inside the fold, which
@@ -3199,42 +3216,23 @@ overwriteAll t e
              { mode = Replace stack1 }
       _ -> e   -- unreachable: only called while 'mode e' is 'Replace'
   where
-    go (d, stack) ch = (d', original : stack)
-      where (d', original) = overwriteOne ch d
-    -- One character in, the document it produces (always succeeds --
-    -- neither branch ever declines) and what to push onto the stack:
-    -- the overwritten cluster, or @Just "\\n"@ marking a split. A
-    -- newline is never folded into 'Doc.overwriteChar': that function
-    -- appends its character directly to a 'LineZ' half, and a 'LineZ'
-    -- may never contain one -- the exact invariant 'Doc.insert'
-    -- already solves for ordinary typing by routing a newline through
-    -- a line split instead. The @Just "\n"@ marker is unambiguous
-    -- because an actual overwritten cluster can never equal a newline,
-    -- for the same reason the split exists.
-    overwriteOne :: Char -> Doc.Document -> (Doc.Document, Maybe Text)
-    overwriteOne '\n' d = (fromMaybe d (Doc.insert "\n" d), Just "\n")
-    overwriteOne ch    d = Doc.overwriteChar unicode ch d
+    go (d, stack) ch = (d', undo : stack)
+      where (d', undo) = overwriteOne ch d
+    -- Each input character produces a document and its matching undo entry.
+    overwriteOne :: Char -> Doc.Document -> (Doc.Document, ReplaceUndo)
+    overwriteOne '\n' d = let (next, original) = Doc.replaceNewline unicode d in (next, ReplaceNewline original)
+    overwriteOne ch    d = let (next, original) = Doc.overwriteChar unicode ch d in (next, ReplaceChar original)
 
 -- | The mirror of 'overwriteAll' for one backspace: undo exactly one
 -- typed character, restoring what it overwrote. An empty stack means
 -- nothing has been typed yet this session, which vim's own @R@ leaves
 -- as a no-op rather than backspacing past where the session started.
 --
--- A stack entry of @Just "\\n"@ cannot be undone with 'Doc.restoreChar'
--- -- that function patches one 'LineZ' half on the current line, but a
--- newline moved the cursor onto a different line entirely, so undoing
--- it means rejoining two lines, not editing one. 'Doc.backspace' is
--- exactly vim's own join-on-backspace-at-start-of-line behaviour,
--- reused rather than re-implemented. What the next line used to start
--- with is not restored by this -- an accepted simplification, not an
--- oversight: doing so faithfully would need its own restore
--- mechanism parallel to this one, for a case (backspacing across a
--- Replace-mode newline) rare enough that this project's budget goes
--- elsewhere first.
-unwind :: [Maybe Text] -> Editor -> Editor
-unwind []                 e = e
-unwind (Just "\n" : rest) e = settleReplace rest (fromMaybe (document e) (Doc.backspace unicode (document e))) e
-unwind (top : rest)       e = settleReplace rest (Doc.restoreChar top (document e)) e
+-- Newline undo joins the rows and restores any grapheme Enter displaced.
+unwind :: [ReplaceUndo] -> Editor -> Editor
+unwind [] e = e
+unwind (ReplaceNewline original : rest) e = settleReplace rest (Doc.restoreNewline unicode original (document e)) e
+unwind (ReplaceChar original : rest) e = settleReplace rest (Doc.restoreChar original (document e)) e
 
 -- | Commits the restored document only if it actually differs from
 -- what was there, the same rule every other edit in this module
@@ -3246,7 +3244,7 @@ unwind (top : rest)       e = settleReplace rest (Doc.restoreChar top (document 
 -- later edit already produced. The mode still updates either way --
 -- the stack was genuinely popped -- only the undo-observable state
 -- does not move when nothing visibly did.
-settleReplace :: [Maybe Text] -> Doc.Document -> Editor -> Editor
+settleReplace :: [ReplaceUndo] -> Doc.Document -> Editor -> Editor
 settleReplace rest d e
   | Doc.toText d == Doc.toText (document e) = e { mode = Replace rest }
   | otherwise                               = (commitTo d e) { mode = Replace rest }
@@ -5582,7 +5580,10 @@ genMode :: Gen Mode
 genMode = Gen.choice
   [ pure Normal
   , Insert <$> Gen.element [Fresh, Dirty]
-  , Replace <$> Gen.list (Range.linear 0 4) (Gen.maybe (Gen.text (Range.linear 1 2) genChar))
+  , Replace <$> Gen.list (Range.linear 0 4) (Gen.choice
+      [ ReplaceChar <$> Gen.maybe (Gen.text (Range.linear 1 2) genChar)
+      , ReplaceNewline <$> Gen.maybe (Gen.text (Range.linear 1 2) genChar)
+      ])
   , Prompt <$> Gen.element [ExCommand, Search]
            <*> Gen.frequency [(3, Gen.text (Range.linear 0 4) genChar), (1, Gen.element ["w", "q", "write", "quit"])]
   ]
@@ -5947,6 +5948,16 @@ replaceModeChecks =
   , ("backspace in R restores the overwritten character",
       body (runActions [InNormal NEnterReplace, InInsert (IInput "XY"), InInsert IBackspace, InInsert IEscape] (editor "abcdef"))
         == "Xbcdef")
+  , ("Enter in R replaces the next grapheme",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\n")] (editor "abc")) == "\nbc")
+  , ("backspace across an R newline restores the replaced grapheme",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\n"), InInsert IBackspace, InInsert IEscape] (editor "abc")) == "abc")
+  , ("backspacing later replacements before a newline restores the full original line",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\nX"), InInsert IBackspace, InInsert IBackspace, InInsert IEscape] (editor "abc")) == "abc")
+  , ("backspace across an R newline restores a combining grapheme whole",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\n"), InInsert IBackspace, InInsert IEscape] (editor "a\769bc")) == "a\769bc")
+  , ("backspace across an R newline preserves an empty line",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\n"), InInsert IBackspace, InInsert IEscape] (editor "\nabc")) == "\nabc")
   , ("backspace past an extension deletes it rather than restoring something that was never there",
       body (runActions [InNormal NEnterReplace, InInsert (IInput "XYZ"), InInsert IBackspace, InInsert IEscape] (editor "a"))
         == "XY")
@@ -5961,9 +5972,9 @@ replaceModeChecks =
       let e = runActions [InNormal NEnterReplace, InInsert (IInput "y")] (editor "x") in version e == 1)
   , ("version bumps exactly once for a multi-character IInput, not once per character",
       let e = runActions [InNormal NEnterReplace, InInsert (IInput "aa")] (editor "bb") in version e == 1)
-  , ("pressing Enter in R mode opens a line rather than embedding a newline in one",
+  , ("Enter in R replaces one grapheme and opens a separate line",
       let e = runActions [InNormal NEnterReplace, InInsert (IInput "ab\ncd"), InInsert IEscape] (editor "XY123456")
-      in body e == "ab\ncd3456" && all (not . Text.any (== '\n')) (Doc.window 0 10 (document e)))
+      in body e == "ab\ncd456" && all (not . Text.any (== '\n')) (Doc.window 0 10 (document e)))
   ]
   where
     runActions cs e0 = foldl (\e c -> fst (step c e)) e0 cs
@@ -6197,7 +6208,8 @@ documents = map Doc.fromText
 
 modes :: [Mode]
 modes = [ Normal, Insert Fresh, Insert Dirty
-        , Replace [], Replace [Nothing], Replace [Just "a"], Replace [Just "\n", Just "x", Nothing]
+        , Replace [], Replace [ReplaceChar Nothing], Replace [ReplaceChar (Just "a")]
+        , Replace [ReplaceNewline (Just "a"), ReplaceChar (Just "x"), ReplaceChar Nothing]
         , Prompt ExCommand "", Prompt ExCommand "q", Prompt ExCommand "w", Prompt Search "x" ]
 
 motions :: [Motion]

@@ -145,7 +145,10 @@ genMode :: Gen Mode
 genMode = Gen.choice
   [ pure Normal
   , Insert <$> Gen.element [Fresh, Dirty]
-  , Replace <$> Gen.list (Range.linear 0 4) (Gen.maybe (Gen.text (Range.linear 1 2) genChar))
+  , Replace <$> Gen.list (Range.linear 0 4) (Gen.choice
+      [ ReplaceChar <$> Gen.maybe (Gen.text (Range.linear 1 2) genChar)
+      , ReplaceNewline <$> Gen.maybe (Gen.text (Range.linear 1 2) genChar)
+      ])
   , Prompt <$> Gen.element [ExCommand, Search]
            <*> Gen.frequency [(3, Gen.text (Range.linear 0 4) genChar), (1, Gen.element ["w", "q", "write", "quit"])]
   ]

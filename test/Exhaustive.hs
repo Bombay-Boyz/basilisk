@@ -24,7 +24,8 @@ documents = map Doc.fromText
 
 modes :: [Mode]
 modes = [ Normal, Insert Fresh, Insert Dirty
-        , Replace [], Replace [Nothing], Replace [Just "a"], Replace [Just "\n", Just "x", Nothing]
+        , Replace [], Replace [ReplaceChar Nothing], Replace [ReplaceChar (Just "a")]
+        , Replace [ReplaceNewline (Just "a"), ReplaceChar (Just "x"), ReplaceChar Nothing]
         , Prompt ExCommand "", Prompt ExCommand "q", Prompt ExCommand "w", Prompt Search "x" ]
 
 motions :: [Motion]

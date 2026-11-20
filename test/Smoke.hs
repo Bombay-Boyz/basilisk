@@ -322,6 +322,16 @@ replaceModeChecks =
   , ("backspace in R restores the overwritten character",
       body (runActions [InNormal NEnterReplace, InInsert (IInput "XY"), InInsert IBackspace, InInsert IEscape] (editor "abcdef"))
         == "Xbcdef")
+  , ("Enter in R replaces the next grapheme",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\n")] (editor "abc")) == "\nbc")
+  , ("backspace across an R newline restores the replaced grapheme",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\n"), InInsert IBackspace, InInsert IEscape] (editor "abc")) == "abc")
+  , ("backspacing later replacements before a newline restores the full original line",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\nX"), InInsert IBackspace, InInsert IBackspace, InInsert IEscape] (editor "abc")) == "abc")
+  , ("backspace across an R newline restores a combining grapheme whole",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\n"), InInsert IBackspace, InInsert IEscape] (editor "a\769bc")) == "a\769bc")
+  , ("backspace across an R newline preserves an empty line",
+      body (runActions [InNormal NEnterReplace, InInsert (IInput "\n"), InInsert IBackspace, InInsert IEscape] (editor "\nabc")) == "\nabc")
   , ("backspace past an extension deletes it rather than restoring something that was never there",
       body (runActions [InNormal NEnterReplace, InInsert (IInput "XYZ"), InInsert IBackspace, InInsert IEscape] (editor "a"))
         == "XY")
@@ -336,9 +346,9 @@ replaceModeChecks =
       let e = runActions [InNormal NEnterReplace, InInsert (IInput "y")] (editor "x") in version e == 1)
   , ("version bumps exactly once for a multi-character IInput, not once per character",
       let e = runActions [InNormal NEnterReplace, InInsert (IInput "aa")] (editor "bb") in version e == 1)
-  , ("pressing Enter in R mode opens a line rather than embedding a newline in one",
+  , ("Enter in R replaces one grapheme and opens a separate line",
       let e = runActions [InNormal NEnterReplace, InInsert (IInput "ab\ncd"), InInsert IEscape] (editor "XY123456")
-      in body e == "ab\ncd3456" && all (not . Text.any (== '\n')) (Doc.window 0 10 (document e)))
+      in body e == "ab\ncd456" && all (not . Text.any (== '\n')) (Doc.window 0 10 (document e)))
   ]
   where
     runActions cs e0 = foldl (\e c -> fst (step c e)) e0 cs

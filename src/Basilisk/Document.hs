@@ -54,6 +54,8 @@ module Basilisk.Document
   , replaceChars
   , overwriteChar
   , restoreChar
+  , replaceNewline
+  , restoreNewline
   , joinLines
     -- * Normal-mode retraction (2.5)
   , clampGap
@@ -1093,6 +1095,28 @@ restoreChar mOriginal d = d { here = LineZ (Text.dropEnd 1 b) (maybe a (<> a) mO
   where
     b = before (here d)
     a = after (here d)
+
+-- | In Replace mode, Enter replaces the first grapheme under the cursor
+-- with a line break. The old grapheme is returned for the mode's undo
+-- stack; at end of line there is nothing to restore.
+replaceNewline :: Unicode -> Document -> (Document, Maybe Text)
+replaceNewline u d = (fromMaybe d (insert "\n" shortened), original)
+  where
+    suffix = after (here d)
+    width = case clusters u suffix of
+      _ : next : _ -> next
+      _ -> Text.length suffix
+    original = if Text.null suffix then Nothing else Just (Text.take width suffix)
+    shortened = d { here = (here d) { after = Text.drop width suffix } }
+
+-- | Undo a Replace-mode newline by joining its rows and restoring the
+-- grapheme it replaced at the cursor, leaving the cursor before it.
+restoreNewline :: Unicode -> Maybe Text -> Document -> Document
+restoreNewline u original d = case backspace u d of
+  Nothing -> d
+  Just joined -> case original of
+    Nothing -> joined
+    Just cluster -> joined { here = (here joined) { after = cluster <> after (here joined) } }
 
 -- | @r@: replace the next @n@ characters with @c@, clamped to the
 -- line, leaving the cursor on the /last/ replaced character -- vim's

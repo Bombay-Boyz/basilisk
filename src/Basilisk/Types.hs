@@ -13,6 +13,7 @@ module Basilisk.Types
     -- * Modes and commands
   , PromptKind (..)
   , Session (..)
+  , ReplaceUndo (..)
   , Mode (..)
   , InsertAnchor (..)
   , NormalCmd (..)
@@ -137,12 +138,13 @@ data Session = Fresh | Dirty
 -- command-buffer field that could drift out of sync with whether a
 -- prompt is open: it is structurally impossible for a buffer to exist in
 -- 'Normal' or 'Insert'.
--- | 'Replace's list is a stack of what each typed character overwrote:
--- @Just cluster@ when there was one to restore, @Nothing@ when typing
--- only extended the line. Carried in the mode for the same reason the
--- prompt buffer and the insert session's count are: it means something
--- only while a replace session is open.
-data Mode = Normal | Insert !Session | Prompt !PromptKind !Text | Replace ![Maybe Text]
+-- | Undo information for one Replace-mode keystroke. A newline records
+-- the grapheme it displaced as well as the fact that it split a row.
+data ReplaceUndo = ReplaceChar !(Maybe Text) | ReplaceNewline !(Maybe Text)
+  deriving (Eq, Show, Generic, NFData)
+
+-- | Replace-mode's undo stack is scoped to the active replace session.
+data Mode = Normal | Insert !Session | Prompt !PromptKind !Text | Replace ![ReplaceUndo]
   deriving (Eq, Show, Generic, NFData)
 
 data InsertAnchor = Before | After | LineBelow | LineAbove
