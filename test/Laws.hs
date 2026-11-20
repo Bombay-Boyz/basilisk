@@ -245,7 +245,7 @@ prop_write_effect_carries_exactly_the_file_bytes = withTests tests . property $ 
   e0 <- forAll genEditor
   let e = e0 { mode = Normal }
   snd (step (InNormal NSave) e)
-    === maybe [] (\p -> [WriteFile p (serialise e) False]) (path e)
+    === maybe [] (\p -> [WriteFile p (serialise e) False False]) (path e)
 
 -- counts --------------------------------------------------------------------
 
@@ -310,7 +310,7 @@ prop_readonly_refuses_to_write = withTests tests . property $ do
   e0 <- forAll genEditor
   let e = onBuffer (\b -> b { bReadOnly = True, bPath = Just "x" }) e0 { mode = Normal }
   snd (step (InNormal NSave) e) === []
-  snd (step (InPrompt PSubmit) e { mode = Prompt ExCommand "w!" }) === [WriteFile "x" (serialise e) True]
+  snd (step (InPrompt PSubmit) e { mode = Prompt ExCommand "w!" }) === [WriteFile "x" (serialise e) True False]
 
 -- | A buffer born empty and still empty writes no bytes -- not a lone
 -- terminator. A zero-byte file and a one-byte @"\n"@ file both load as

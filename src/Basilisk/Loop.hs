@@ -44,22 +44,24 @@ loop vty !ks !e = do
     (ks', Nothing)  -> loop vty ks' shown
     (ks', Just act) -> do
       let (!next, effects) = step act shown
-      done <- foldM perform next effects
-      if RequestQuit `elem` effects
+      (done, quitRequested) <- foldM perform (next, False) effects
+      if quitRequested
         then Vty.update vty (render wh (scroll wh done))
         else loop vty ks' done
 
--- | The one place an 'Effect' becomes IO. 'RequestQuit' is handled by
--- the loop's own membership test after the final frame is drawn, so it
--- does nothing here; the pure core reported a quit, and the shell -- not
--- the core -- decided to honour it.
-perform :: Editor -> Effect -> IO Editor
-perform e (WriteFile p t force) = settle <$> File.writeDocument p t force (stamp e)
-  where
-    -- A successful write is the only place the buffer becomes clean,
-    -- and it records the stamp the writer observed rather than
-    -- re-stat'ing and racing with itself.
-    settle (Left why)   = e { status = Just why }
-    settle (Right mark) = (onBuffer (\b -> b { bSaved = bVersion b, bStamp = mark }) e)
-                            { status = Just "written" }
-perform e RequestQuit = pure e
+-- | The one place an 'Effect' becomes IO. Explicit quit effects are
+-- honored by the loop; write effects request quit only after success.
+-- A successful write is the only place the buffer becomes clean, and it
+-- records the stamp the writer observed rather than re-stat'ing and
+-- racing with itself. The quit bit is honored only after that success.
+perform :: (Editor, Bool) -> Effect -> IO (Editor, Bool)
+perform (e, quitRequested) (WriteFile p t force quitOnSuccess) = do
+  result <- File.writeDocument p t force (stamp e)
+  pure $ case result of
+    Left why -> (e { status = Just why }, quitRequested)
+    Right mark ->
+      ( (onBuffer (\b -> b { bSaved = bVersion b, bStamp = mark }) e)
+          { status = Just "written" }
+      , quitRequested || quitOnSuccess
+      )
+perform (e, _) RequestQuit = pure (e, True)

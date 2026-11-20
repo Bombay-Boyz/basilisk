@@ -300,15 +300,17 @@ touches neither `history` nor `version`.
 ## 2.4e The effect boundary
 
 ```haskell
-data Effect = WriteFile !FilePath !Text | RequestQuit
+data Effect = WriteFile !FilePath !Text !Bool !Bool | RequestQuit
 
 step :: Action -> Editor -> (Editor, [Effect])
 ```
 
 `step` performs no IO; it *describes* it. `NSave` computes the exact bytes,
 line endings included (2.9), so the shell has no editing decision left.
-`:q` and `NQuit` both return `RequestQuit`. The shell interprets the list
-and decides whether to stop.
+The two booleans are the force-write override and `quitOnSuccess`.
+`:q` returns `RequestQuit` when the buffer is clean. `:wq` and `ZZ` set
+the write effect's `quitOnSuccess` flag; the shell requests termination
+only after that write succeeds.
 
 ## 2.5 Document and cursor
 
@@ -516,8 +518,9 @@ stamp is modification time and size together, because either alone is
 too coarse.
 
 The pure core records these decisions and the shell acts on them: `save`
-carries the user's `!` into the `WriteFile` effect, and only the shell,
-which performed the write, may mark the buffer clean.
+carries the user's `!` and the conditional-quit policy into `WriteFile`;
+only the shell, which performed the write, may mark the buffer clean or
+honor that quit request.
 
 ## 2.9b The trailing newline is a flag
 

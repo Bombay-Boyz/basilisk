@@ -166,16 +166,16 @@ stepChecks =
   , ("save without a path is a status line, not a crash",
       snd (step (InNormal NSave) (editor "x")) == [] && status (fst (step (InNormal NSave) (editor "x"))) == Just "no file name")
   , ("save with a path emits exactly the bytes to write",
-      snd (step (InNormal NSave) (withEol LF False (onFile "out.txt" (editor "x")))) == [WriteFile "out.txt" "x" False])
+      snd (step (InNormal NSave) (withEol LF False (onFile "out.txt" (editor "x")))) == [WriteFile "out.txt" "x" False False])
   , ("CRLF survives a round trip",
-      snd (step (InNormal NSave) (withEol CRLF True (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\r\nb\r\n" False])
+      snd (step (InNormal NSave) (withEol CRLF True (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\r\nb\r\n" False False])
   , (":w and the save command agree",
       snd (step (InPrompt PSubmit) (onFile "o" (editor "x")) { mode = Prompt ExCommand "w" })
         == snd (step (InNormal NSave) (onFile "o" (editor "x"))))
   , ("the trailing newline is a flag, not a line",
       Doc.lineCount (document (editor "a\nb")) == 2
-        && snd (step (InNormal NSave) (withEol LF True (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\nb\n" False]
-        && snd (step (InNormal NSave) (withEol LF False (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\nb" False])
+        && snd (step (InNormal NSave) (withEol LF True (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\nb\n" False False]
+        && snd (step (InNormal NSave) (withEol LF False (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\nb" False False])
   , ("an unknown ex-command says so",
       status (fst (step (InPrompt PSubmit) (editor "x") { mode = Prompt ExCommand "zz" })) == Just "unknown command")
   , ("a prompt command with no prompt open is inert", step (InPrompt PBackspace) (editor "x") == (editor "x", []))
@@ -288,7 +288,10 @@ tier1Checks =
   , ("3ra on an already-all-a's span is also a no-op",
       let e = run [NReplace 3 'a'] (editor "aaa") in version e == 0 && not (modified e))
   , ("r is repeatable with .", body (run [NReplace 1 'X', NMove 1 (MChar DRight), NRepeat 1] (editor "abc")) == "XXc")
-  , ("ZZ saves and quits", snd (step (InNormal NWriteQuit) (onFile "/tmp/zz-smoke.txt" (editor "x"))) /= [])
+  , ("ZZ requests quit only after its write succeeds",
+      snd (step (InNormal NWriteQuit) (onFile "/tmp/zz-smoke.txt" (editor "x")))
+        == [WriteFile "/tmp/zz-smoke.txt" "x\n" False True])
+  , ("ZZ without a filename does not quit", snd (step (InNormal NWriteQuit) (editor "x")) == [])
   , ("ZQ quits without saving, regardless of modified state",
       let e = (run [NOperate 1 Delete (MChar DRight)] (editor "x")) in snd (step (InNormal NQuitDiscard) e) == [RequestQuit])
   , ("3ifoo<Esc> types the text three times", body (typeEsc 3 Before "foo" (editor "")) == "foofoofoo")
@@ -429,9 +432,9 @@ safetyChecks =
   , (":q! on a modified buffer quits", snd (ex "q!" dirty) == [RequestQuit])
   , ("a buffer is clean until edited, and dirty after", not (modified clean) && modified dirty)
   , ("undo alone does not make a buffer clean again", modified (run [NUndo 1] dirty))
-  , (":wq writes and quits", snd (ex "wq" (onFile "o" dirty)) == [WriteFile "o" "ba\n" False, RequestQuit])
+  , (":wq quits only after a successful write", snd (ex "wq" (onFile "o" dirty)) == [WriteFile "o" "ba\n" False True])
   , (":wq with no filename does neither", snd (ex "wq" dirty) == [])
-  , (":w! sets the override the shell needs", snd (ex "w!" (onFile "o" dirty)) == [WriteFile "o" "ba\n" True])
+  , (":w! sets the override the shell needs", snd (ex "w!" (onFile "o" dirty)) == [WriteFile "o" "ba\n" True False])
   , ("Ctrl-C is bound to nothing that can quit", null (decodeCtrl 'c'))
   ]
   where

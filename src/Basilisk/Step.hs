@@ -471,11 +471,14 @@ seek back k pat e = case Doc.reach unicode (bounded k) (MFind back pat) (documen
 -- @force@ is the user's @!@, which overrides the shell's on-disk
 -- staleness check -- a decision the pure core can record but not make.
 save :: Bool -> Editor -> Step
-save force e
+save force = saveWith force False
+
+saveWith :: Bool -> Bool -> Editor -> Step
+saveWith force quitOnSuccess e
   | readOnly e && not force = pureT e { status = Just "read-only file (:w! to override)" }
   | otherwise = maybe (pureT e { status = Just "no file name" }) write (path e)
   where
-    write p = (e, [WriteFile p (serialise e) force])
+    write p = (e, [WriteFile p (serialise e) force quitOnSuccess])
 
 -- | Quitting with unsaved changes is refused rather than confirmed:
 -- there is no dialogue to answer in a modal editor, and a keystroke
@@ -486,14 +489,11 @@ quit force e
   | force || not (modified e) = (e, [RequestQuit])
   | otherwise = pureT e { status = Just "no write since last change (:q! to override)" }
 
--- | @:wq@. The quit is conditional on the write actually being
--- requested: with no filename there is nothing to write, so quitting
--- would discard the buffer on the strength of a command that asked for
--- it to be saved.
+-- | @:wq@ and @ZZ@. The effect couples the quit request to successful
+-- completion of the write. Missing filenames, read-only buffers and IO
+-- failures therefore leave the editor open with its buffer intact.
 writeQuit :: Editor -> Step
-writeQuit e = case save False e of
-  (e', [])      -> (e', [])
-  (e', effects) -> (e', effects <> [RequestQuit])
+writeQuit = saveWith False True
 
 -- shared machinery ---------------------------------------------------
 

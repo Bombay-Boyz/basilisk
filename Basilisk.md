@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: ten modules, 1816 lines of code. The verification
+Status, in one line: ten modules, 1820 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -249,15 +249,17 @@ touches neither `history` nor `version`.
 ## 2.4e The effect boundary
 
 ```haskell
-data Effect = WriteFile !FilePath !Text | RequestQuit
+data Effect = WriteFile !FilePath !Text !Bool !Bool | RequestQuit
 
 step :: Action -> Editor -> (Editor, [Effect])
 ```
 
 `step` performs no IO; it *describes* it. `NSave` computes the exact bytes,
 line endings included (2.9), so the shell has no editing decision left.
-`:q` and `NQuit` both return `RequestQuit`. The shell interprets the list
-and decides whether to stop.
+The two booleans are the force-write override and `quitOnSuccess`.
+`:q` returns `RequestQuit` when the buffer is clean. `:wq` and `ZZ` set
+the write effect's `quitOnSuccess` flag; the shell requests termination
+only after that write succeeds.
 
 ## 2.5 Document and cursor
 
@@ -465,8 +467,9 @@ stamp is modification time and size together, because either alone is
 too coarse.
 
 The pure core records these decisions and the shell acts on them: `save`
-carries the user's `!` into the `WriteFile` effect, and only the shell,
-which performed the write, may mark the buffer clean.
+carries the user's `!` and the conditional-quit policy into `WriteFile`;
+only the shell, which performed the write, may mark the buffer clean or
+honor that quit request.
 
 ## 2.9b The trailing newline is a flag
 
@@ -925,13 +928,13 @@ prototype, measured, before adoption.
 | `Basilisk.Render` | viewport, frame, status line | 82 | 130 |
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
 | `Basilisk.File` | open and write, encoding-safe | 168 | 272 |
-| `Basilisk.Loop` | the IO shell | 37 | 65 |
+| `Basilisk.Loop` | the IO shell | 41 | 67 |
 | `Main` | argument parsing | 47 | 55 |
-| **Total** | | **1816** | |
+| **Total** | | **1820** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **1816 lines against a 3,000 ceiling**, leaving 1184
+specified — is **1820 lines against a 3,000 ceiling**, leaving 1180
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -943,7 +946,7 @@ Tests, which do not count against the ceiling:
 |---|---|---|---|
 | `test/Laws.hs` | the laws, as Hedgehog properties | 426 | 718 |
 | `test/Gen.hs` | Unicode-hostile generators | 132 | 183 |
-| `test/Smoke.hs` | worked examples, in vim's vocabulary | 470 | 540 |
+| `test/Smoke.hs` | worked examples, in vim's vocabulary | 473 | 543 |
 | `test/Exhaustive.hs` | totality sweep | 52 | 65 |
 
 ## 2.14 Deliberately out of scope for v1
@@ -2572,7 +2575,7 @@ data NormalCmd
   | NRepeatFind !Int !Bool   -- ^ @n@ and @N@: the last search again, reversed when 'True'
   | NRepeatTo !Int !Bool     -- ^ @;@ and @,@: the last @f@\/@t@\/@F@\/@T@ again, reversed when 'True'
   | NReplace !Int !Char      -- ^ @r@: replace the next @n@ characters with one
-  | NWriteQuit               -- ^ @ZZ@: save (if there is a path) then quit unconditionally
+  | NWriteQuit               -- ^ @ZZ@: save, then quit only if the write succeeds
   | NQuitDiscard             -- ^ @ZQ@: quit unconditionally, discarding any changes
   | NPasteText !Text
   | NUndo !Int
@@ -2595,11 +2598,11 @@ data Action = InNormal !NormalCmd | InInsert !InsertCmd | InPrompt !PromptCmd
 
 -- | Everything the pure core can ask the shell to do but may not do
 -- itself. 'WriteFile' carries the exact bytes, already line-ending
--- encoded, so the shell has no editing decision left to make, and
--- whether the user overrode the on-disk staleness check.
+-- encoded, whether the user overrode the on-disk staleness check, and
+-- whether a successful write should also request a quit.
 -- 'RequestQuit' is how a quit reaches the shell without the pure core
 -- ever deciding to stop the program.
-data Effect = WriteFile !FilePath !Text !Bool | RequestQuit
+data Effect = WriteFile !FilePath !Text !Bool !Bool | RequestQuit
   deriving (Eq, Show, Generic, NFData)
 
 -- | What the register holds, and how it was taken. A linewise cut
@@ -3286,11 +3289,14 @@ seek back k pat e = case Doc.reach unicode (bounded k) (MFind back pat) (documen
 -- @force@ is the user's @!@, which overrides the shell's on-disk
 -- staleness check -- a decision the pure core can record but not make.
 save :: Bool -> Editor -> Step
-save force e
+save force = saveWith force False
+
+saveWith :: Bool -> Bool -> Editor -> Step
+saveWith force quitOnSuccess e
   | readOnly e && not force = pureT e { status = Just "read-only file (:w! to override)" }
   | otherwise = maybe (pureT e { status = Just "no file name" }) write (path e)
   where
-    write p = (e, [WriteFile p (serialise e) force])
+    write p = (e, [WriteFile p (serialise e) force quitOnSuccess])
 
 -- | Quitting with unsaved changes is refused rather than confirmed:
 -- there is no dialogue to answer in a modal editor, and a keystroke
@@ -3301,14 +3307,11 @@ quit force e
   | force || not (modified e) = (e, [RequestQuit])
   | otherwise = pureT e { status = Just "no write since last change (:q! to override)" }
 
--- | @:wq@. The quit is conditional on the write actually being
--- requested: with no filename there is nothing to write, so quitting
--- would discard the buffer on the strength of a command that asked for
--- it to be saved.
+-- | @:wq@ and @ZZ@. The effect couples the quit request to successful
+-- completion of the write. Missing filenames, read-only buffers and IO
+-- failures therefore leave the editor open with its buffer intact.
 writeQuit :: Editor -> Step
-writeQuit e = case save False e of
-  (e', [])      -> (e', [])
-  (e', effects) -> (e', effects <> [RequestQuit])
+writeQuit = saveWith False True
 
 -- shared machinery ---------------------------------------------------
 
@@ -4239,25 +4242,27 @@ loop vty !ks !e = do
     (ks', Nothing)  -> loop vty ks' shown
     (ks', Just act) -> do
       let (!next, effects) = step act shown
-      done <- foldM perform next effects
-      if RequestQuit `elem` effects
+      (done, quitRequested) <- foldM perform (next, False) effects
+      if quitRequested
         then Vty.update vty (render wh (scroll wh done))
         else loop vty ks' done
 
--- | The one place an 'Effect' becomes IO. 'RequestQuit' is handled by
--- the loop's own membership test after the final frame is drawn, so it
--- does nothing here; the pure core reported a quit, and the shell -- not
--- the core -- decided to honour it.
-perform :: Editor -> Effect -> IO Editor
-perform e (WriteFile p t force) = settle <$> File.writeDocument p t force (stamp e)
-  where
-    -- A successful write is the only place the buffer becomes clean,
-    -- and it records the stamp the writer observed rather than
-    -- re-stat'ing and racing with itself.
-    settle (Left why)   = e { status = Just why }
-    settle (Right mark) = (onBuffer (\b -> b { bSaved = bVersion b, bStamp = mark }) e)
-                            { status = Just "written" }
-perform e RequestQuit = pure e
+-- | The one place an 'Effect' becomes IO. Explicit quit effects are
+-- honored by the loop; write effects request quit only after success.
+-- A successful write is the only place the buffer becomes clean, and it
+-- records the stamp the writer observed rather than re-stat'ing and
+-- racing with itself. The quit bit is honored only after that success.
+perform :: (Editor, Bool) -> Effect -> IO (Editor, Bool)
+perform (e, quitRequested) (WriteFile p t force quitOnSuccess) = do
+  result <- File.writeDocument p t force (stamp e)
+  pure $ case result of
+    Left why -> (e { status = Just why }, quitRequested)
+    Right mark ->
+      ( (onBuffer (\b -> b { bSaved = bVersion b, bStamp = mark }) e)
+          { status = Just "written" }
+      , quitRequested || quitOnSuccess
+      )
+perform (e, _) RequestQuit = pure (e, True)
 ```
 
 ### `app/Main.hs`
@@ -4805,7 +4810,7 @@ prop_write_effect_carries_exactly_the_file_bytes = withTests tests . property $ 
   e0 <- forAll genEditor
   let e = e0 { mode = Normal }
   snd (step (InNormal NSave) e)
-    === maybe [] (\p -> [WriteFile p (serialise e) False]) (path e)
+    === maybe [] (\p -> [WriteFile p (serialise e) False False]) (path e)
 
 -- counts --------------------------------------------------------------------
 
@@ -4870,7 +4875,7 @@ prop_readonly_refuses_to_write = withTests tests . property $ do
   e0 <- forAll genEditor
   let e = onBuffer (\b -> b { bReadOnly = True, bPath = Just "x" }) e0 { mode = Normal }
   snd (step (InNormal NSave) e) === []
-  snd (step (InPrompt PSubmit) e { mode = Prompt ExCommand "w!" }) === [WriteFile "x" (serialise e) True]
+  snd (step (InPrompt PSubmit) e { mode = Prompt ExCommand "w!" }) === [WriteFile "x" (serialise e) True False]
 
 -- | A buffer born empty and still empty writes no bytes -- not a lone
 -- terminator. A zero-byte file and a one-byte @"\n"@ file both load as
@@ -5637,16 +5642,16 @@ stepChecks =
   , ("save without a path is a status line, not a crash",
       snd (step (InNormal NSave) (editor "x")) == [] && status (fst (step (InNormal NSave) (editor "x"))) == Just "no file name")
   , ("save with a path emits exactly the bytes to write",
-      snd (step (InNormal NSave) (withEol LF False (onFile "out.txt" (editor "x")))) == [WriteFile "out.txt" "x" False])
+      snd (step (InNormal NSave) (withEol LF False (onFile "out.txt" (editor "x")))) == [WriteFile "out.txt" "x" False False])
   , ("CRLF survives a round trip",
-      snd (step (InNormal NSave) (withEol CRLF True (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\r\nb\r\n" False])
+      snd (step (InNormal NSave) (withEol CRLF True (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\r\nb\r\n" False False])
   , (":w and the save command agree",
       snd (step (InPrompt PSubmit) (onFile "o" (editor "x")) { mode = Prompt ExCommand "w" })
         == snd (step (InNormal NSave) (onFile "o" (editor "x"))))
   , ("the trailing newline is a flag, not a line",
       Doc.lineCount (document (editor "a\nb")) == 2
-        && snd (step (InNormal NSave) (withEol LF True (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\nb\n" False]
-        && snd (step (InNormal NSave) (withEol LF False (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\nb" False])
+        && snd (step (InNormal NSave) (withEol LF True (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\nb\n" False False]
+        && snd (step (InNormal NSave) (withEol LF False (onFile "o" (editor "a\nb")))) == [WriteFile "o" "a\nb" False False])
   , ("an unknown ex-command says so",
       status (fst (step (InPrompt PSubmit) (editor "x") { mode = Prompt ExCommand "zz" })) == Just "unknown command")
   , ("a prompt command with no prompt open is inert", step (InPrompt PBackspace) (editor "x") == (editor "x", []))
@@ -5759,7 +5764,10 @@ tier1Checks =
   , ("3ra on an already-all-a's span is also a no-op",
       let e = run [NReplace 3 'a'] (editor "aaa") in version e == 0 && not (modified e))
   , ("r is repeatable with .", body (run [NReplace 1 'X', NMove 1 (MChar DRight), NRepeat 1] (editor "abc")) == "XXc")
-  , ("ZZ saves and quits", snd (step (InNormal NWriteQuit) (onFile "/tmp/zz-smoke.txt" (editor "x"))) /= [])
+  , ("ZZ requests quit only after its write succeeds",
+      snd (step (InNormal NWriteQuit) (onFile "/tmp/zz-smoke.txt" (editor "x")))
+        == [WriteFile "/tmp/zz-smoke.txt" "x\n" False True])
+  , ("ZZ without a filename does not quit", snd (step (InNormal NWriteQuit) (editor "x")) == [])
   , ("ZQ quits without saving, regardless of modified state",
       let e = (run [NOperate 1 Delete (MChar DRight)] (editor "x")) in snd (step (InNormal NQuitDiscard) e) == [RequestQuit])
   , ("3ifoo<Esc> types the text three times", body (typeEsc 3 Before "foo" (editor "")) == "foofoofoo")
@@ -5900,9 +5908,9 @@ safetyChecks =
   , (":q! on a modified buffer quits", snd (ex "q!" dirty) == [RequestQuit])
   , ("a buffer is clean until edited, and dirty after", not (modified clean) && modified dirty)
   , ("undo alone does not make a buffer clean again", modified (run [NUndo 1] dirty))
-  , (":wq writes and quits", snd (ex "wq" (onFile "o" dirty)) == [WriteFile "o" "ba\n" False, RequestQuit])
+  , (":wq quits only after a successful write", snd (ex "wq" (onFile "o" dirty)) == [WriteFile "o" "ba\n" False True])
   , (":wq with no filename does neither", snd (ex "wq" dirty) == [])
-  , (":w! sets the override the shell needs", snd (ex "w!" (onFile "o" dirty)) == [WriteFile "o" "ba\n" True])
+  , (":w! sets the override the shell needs", snd (ex "w!" (onFile "o" dirty)) == [WriteFile "o" "ba\n" True False])
   , ("Ctrl-C is bound to nothing that can quit", null (decodeCtrl 'c'))
   ]
   where

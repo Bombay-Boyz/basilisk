@@ -167,7 +167,7 @@ data NormalCmd
   | NRepeatFind !Int !Bool   -- ^ @n@ and @N@: the last search again, reversed when 'True'
   | NRepeatTo !Int !Bool     -- ^ @;@ and @,@: the last @f@\/@t@\/@F@\/@T@ again, reversed when 'True'
   | NReplace !Int !Char      -- ^ @r@: replace the next @n@ characters with one
-  | NWriteQuit               -- ^ @ZZ@: save (if there is a path) then quit unconditionally
+  | NWriteQuit               -- ^ @ZZ@: save, then quit only if the write succeeds
   | NQuitDiscard             -- ^ @ZQ@: quit unconditionally, discarding any changes
   | NPasteText !Text
   | NUndo !Int
@@ -190,11 +190,11 @@ data Action = InNormal !NormalCmd | InInsert !InsertCmd | InPrompt !PromptCmd
 
 -- | Everything the pure core can ask the shell to do but may not do
 -- itself. 'WriteFile' carries the exact bytes, already line-ending
--- encoded, so the shell has no editing decision left to make, and
--- whether the user overrode the on-disk staleness check.
+-- encoded, whether the user overrode the on-disk staleness check, and
+-- whether a successful write should also request a quit.
 -- 'RequestQuit' is how a quit reaches the shell without the pure core
 -- ever deciding to stop the program.
-data Effect = WriteFile !FilePath !Text !Bool | RequestQuit
+data Effect = WriteFile !FilePath !Text !Bool !Bool | RequestQuit
   deriving (Eq, Show, Generic, NFData)
 
 -- | What the register holds, and how it was taken. A linewise cut
