@@ -18,7 +18,7 @@ module Basilisk.Render
 import qualified Data.Text as Text
 import qualified Graphics.Vty as Vty
 
-import Basilisk.Cursor (displayColumn, renderable, sliceDisplayAt, widthAt)
+import Basilisk.Cursor (displayColumn, sliceDisplay, sliceDisplayAt, widthAt)
 import qualified Basilisk.Document as Doc
 import Basilisk.Syntax (Highlight (..), highlightHaskell, highlightMarkdown)
 import Basilisk.Types
@@ -67,10 +67,13 @@ render :: (Int, Int) -> Editor -> Vty.Picture
 render wh0 e = (Vty.picForImage (Vty.vertCat (rows <> [bar]))) { Vty.picCursor = cur }
   where
     (w, h) = usable wh0
-    rows = map (renderLine e w)
-      (Doc.window (top e) (body wh0) (document e))
+    bodyHeight = max 0 (h - 1)
+    visible = map (renderLine e w)
+      (Doc.window (top e) bodyHeight (document e))
+    blankRow = Vty.text' Vty.defAttr (Text.replicate w " ")
+    rows = visible <> replicate (max 0 (bodyHeight - length visible)) blankRow
     bar    = Vty.text' (Vty.defAttr `Vty.withStyle` Vty.reverseVideo)
-                       (Text.justifyLeft w ' ' (Text.take w (renderable (statusLine e))))
+                       (Text.justifyLeft w ' ' (sliceDisplay 0 w (statusLine e)))
     clamp lo hi = max lo . min hi
     -- A display with no cells has nowhere to put a cursor, and asking
     -- vty (6.6) to place one there is a segfault in the terminal layer,
@@ -79,14 +82,15 @@ render wh0 e = (Vty.picForImage (Vty.vertCat (rows <> [bar]))) { Vty.picCursor =
     -- handed back to the terminal honest about a window that cannot
     -- show it.
     cur
-      | uncurry (*) wh0 <= 0 = Vty.NoCursor
+      | uncurry (*) wh0 <= 0 || bodyHeight == 0 = Vty.NoCursor
       | otherwise = Vty.Cursor
           (clamp 0 (w - 1) (Doc.unColumn (displayColumn (Doc.beforeCursor (document e))) - left e))
           (clamp 0 (h - 1) (Doc.cursorRow (document e) - top e))
 
 renderLine :: Editor -> Int -> Text.Text -> Vty.Image
-renderLine e width line = Vty.horizCat (go (Doc.Column 0) tokens)
+renderLine e width line = Vty.horizCat (if null images then [blank] else images)
   where
+    blank = Vty.text' Vty.defAttr " "
     extension = maybe "" (takeExtension) (path e)
     tokens
       | extension == ".hs" || extension == ".lhs" = highlightHaskell line
@@ -97,6 +101,7 @@ renderLine e width line = Vty.horizCat (go (Doc.Column 0) tokens)
     go col ((kind, text) : rest) =
       Vty.text' (attribute kind) (sliceDisplayAt (Doc.unColumn col) (left e) width text) :
         go (advance col text) rest
+    images = go (Doc.Column 0) tokens
     advance :: Doc.Column -> Text.Text -> Doc.Column
     advance = Text.foldl' (\col c -> col + Doc.Column (widthAt col c))
     attribute Plain = Vty.defAttr

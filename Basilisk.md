@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: ten modules, 1811 lines of code. The verification
+Status, in one line: ten modules, 1816 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -922,16 +922,16 @@ prototype, measured, before adoption.
 | `Basilisk.Types` | modes, tagged commands, effects, editor | 231 | 405 |
 | `Basilisk.Step` | the pure transition function | 296 | 562 |
 | `Basilisk.Decode` | vim's key grammar, as a Mealy machine | 180 | 284 |
-| `Basilisk.Render` | viewport, frame, status line | 77 | 125 |
+| `Basilisk.Render` | viewport, frame, status line | 82 | 130 |
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
 | `Basilisk.File` | open and write, encoding-safe | 168 | 272 |
 | `Basilisk.Loop` | the IO shell | 37 | 65 |
 | `Main` | argument parsing | 47 | 55 |
-| **Total** | | **1811** | |
+| **Total** | | **1816** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **1811 lines against a 3,000 ceiling**, leaving 1189
+specified — is **1816 lines against a 3,000 ceiling**, leaving 1184
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -943,7 +943,7 @@ Tests, which do not count against the ceiling:
 |---|---|---|---|
 | `test/Laws.hs` | the laws, as Hedgehog properties | 426 | 718 |
 | `test/Gen.hs` | Unicode-hostile generators | 132 | 183 |
-| `test/Smoke.hs` | worked examples, in vim's vocabulary | 465 | 535 |
+| `test/Smoke.hs` | worked examples, in vim's vocabulary | 470 | 540 |
 | `test/Exhaustive.hs` | totality sweep | 52 | 65 |
 
 ## 2.14 Deliberately out of scope for v1
@@ -3689,7 +3689,7 @@ module Basilisk.Render
 import qualified Data.Text as Text
 import qualified Graphics.Vty as Vty
 
-import Basilisk.Cursor (displayColumn, renderable, sliceDisplayAt, widthAt)
+import Basilisk.Cursor (displayColumn, sliceDisplay, sliceDisplayAt, widthAt)
 import qualified Basilisk.Document as Doc
 import Basilisk.Syntax (Highlight (..), highlightHaskell, highlightMarkdown)
 import Basilisk.Types
@@ -3738,10 +3738,13 @@ render :: (Int, Int) -> Editor -> Vty.Picture
 render wh0 e = (Vty.picForImage (Vty.vertCat (rows <> [bar]))) { Vty.picCursor = cur }
   where
     (w, h) = usable wh0
-    rows = map (renderLine e w)
-      (Doc.window (top e) (body wh0) (document e))
+    bodyHeight = max 0 (h - 1)
+    visible = map (renderLine e w)
+      (Doc.window (top e) bodyHeight (document e))
+    blankRow = Vty.text' Vty.defAttr (Text.replicate w " ")
+    rows = visible <> replicate (max 0 (bodyHeight - length visible)) blankRow
     bar    = Vty.text' (Vty.defAttr `Vty.withStyle` Vty.reverseVideo)
-                       (Text.justifyLeft w ' ' (Text.take w (renderable (statusLine e))))
+                       (Text.justifyLeft w ' ' (sliceDisplay 0 w (statusLine e)))
     clamp lo hi = max lo . min hi
     -- A display with no cells has nowhere to put a cursor, and asking
     -- vty (6.6) to place one there is a segfault in the terminal layer,
@@ -3750,14 +3753,15 @@ render wh0 e = (Vty.picForImage (Vty.vertCat (rows <> [bar]))) { Vty.picCursor =
     -- handed back to the terminal honest about a window that cannot
     -- show it.
     cur
-      | uncurry (*) wh0 <= 0 = Vty.NoCursor
+      | uncurry (*) wh0 <= 0 || bodyHeight == 0 = Vty.NoCursor
       | otherwise = Vty.Cursor
           (clamp 0 (w - 1) (Doc.unColumn (displayColumn (Doc.beforeCursor (document e))) - left e))
           (clamp 0 (h - 1) (Doc.cursorRow (document e) - top e))
 
 renderLine :: Editor -> Int -> Text.Text -> Vty.Image
-renderLine e width line = Vty.horizCat (go (Doc.Column 0) tokens)
+renderLine e width line = Vty.horizCat (if null images then [blank] else images)
   where
+    blank = Vty.text' Vty.defAttr " "
     extension = maybe "" (takeExtension) (path e)
     tokens
       | extension == ".hs" || extension == ".lhs" = highlightHaskell line
@@ -3768,6 +3772,7 @@ renderLine e width line = Vty.horizCat (go (Doc.Column 0) tokens)
     go col ((kind, text) : rest) =
       Vty.text' (attribute kind) (sliceDisplayAt (Doc.unColumn col) (left e) width text) :
         go (advance col text) rest
+    images = go (Doc.Column 0) tokens
     advance :: Doc.Column -> Text.Text -> Doc.Column
     advance = Text.foldl' (\col c -> col + Doc.Column (widthAt col c))
     attribute Plain = Vty.defAttr
@@ -5229,8 +5234,8 @@ prop_clamp_top_moves_only_when_it_must = withTests tests . property $ do
 
 -- | Rendering is total for every editor and every terminal size,
 -- including the degenerate ones a pty reports before a window size is
--- set. A cursor on a zero-cell display segfaults vty 6.6, so the frame
--- must not carry one.
+-- set. A cursor on a zero-cell display segfaults vty 6.6, and a one-row
+-- terminal has no body row because its only row belongs to the status line.
 prop_render_is_total_for_any_size :: Property
 prop_render_is_total_for_any_size = withTests tests . property $ do
   e <- forAll genEditor
@@ -5238,7 +5243,7 @@ prop_render_is_total_for_any_size = withTests tests . property $ do
   h <- forAll (HG.int (Range.linear 0 40))
   let pic = render (w, h) (scroll (w, h) e)
   case Vty.picCursor pic of
-    Vty.NoCursor -> assert (w * h <= 0)
+    Vty.NoCursor -> assert (w * h <= 0 || h <= 1)
     Vty.Cursor x y -> assert (x >= 0 && x < max 1 w && y >= 0 && y < max 1 h)
     _ -> success
 
@@ -5481,7 +5486,7 @@ import qualified Graphics.Vty as Vty
 import Basilisk.Cursor (clusterBounds, displayColumn, renderable, unicode, widthAt)
 import Basilisk.Decode (decode, initialKeyState)
 import qualified Basilisk.Document as Doc
-import Basilisk.Render (clampTop)
+import Basilisk.Render (clampTop, render, scroll)
 import Basilisk.Step (step)
 import Basilisk.Types
 
@@ -5997,8 +6002,13 @@ viewportChecks =
   , ("it scrolls up only to reach the cursor", clampTop 10 2 7 == 2)
   , ("it scrolls down by the least that works", clampTop 10 20 3 == 11)
   , ("every row is reachable", and [inside h r t | h <- [1 .. 8], r <- [0 .. 20], t <- [0 .. 20]])
+  , ("the status line stays on the bottom terminal row",
+      all frameFills [(80, 24), (32, 8), (1, 1)])
   ]
-  where inside h r t = let t' = clampTop h r t in t' >= 0 && t' <= r && r < t' + h
+  where
+    inside h r t = let t' = clampTop h r t in t' >= 0 && t' <= r && r < t' + h
+    frameFills size =
+      Vty.imageHeight (Vty.picImage (render size (scroll size (editor "short")))) == snd size
 ```
 
 ### `test/Exhaustive.hs`

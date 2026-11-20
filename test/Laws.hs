@@ -674,8 +674,8 @@ prop_clamp_top_moves_only_when_it_must = withTests tests . property $ do
 
 -- | Rendering is total for every editor and every terminal size,
 -- including the degenerate ones a pty reports before a window size is
--- set. A cursor on a zero-cell display segfaults vty 6.6, so the frame
--- must not carry one.
+-- set. A cursor on a zero-cell display segfaults vty 6.6, and a one-row
+-- terminal has no body row because its only row belongs to the status line.
 prop_render_is_total_for_any_size :: Property
 prop_render_is_total_for_any_size = withTests tests . property $ do
   e <- forAll genEditor
@@ -683,7 +683,7 @@ prop_render_is_total_for_any_size = withTests tests . property $ do
   h <- forAll (HG.int (Range.linear 0 40))
   let pic = render (w, h) (scroll (w, h) e)
   case Vty.picCursor pic of
-    Vty.NoCursor -> assert (w * h <= 0)
+    Vty.NoCursor -> assert (w * h <= 0 || h <= 1)
     Vty.Cursor x y -> assert (x >= 0 && x < max 1 w && y >= 0 && y < max 1 h)
     _ -> success
 

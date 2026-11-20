@@ -15,7 +15,7 @@ import qualified Graphics.Vty as Vty
 import Basilisk.Cursor (clusterBounds, displayColumn, renderable, unicode, widthAt)
 import Basilisk.Decode (decode, initialKeyState)
 import qualified Basilisk.Document as Doc
-import Basilisk.Render (clampTop)
+import Basilisk.Render (clampTop, render, scroll)
 import Basilisk.Step (step)
 import Basilisk.Types
 
@@ -531,5 +531,10 @@ viewportChecks =
   , ("it scrolls up only to reach the cursor", clampTop 10 2 7 == 2)
   , ("it scrolls down by the least that works", clampTop 10 20 3 == 11)
   , ("every row is reachable", and [inside h r t | h <- [1 .. 8], r <- [0 .. 20], t <- [0 .. 20]])
+  , ("the status line stays on the bottom terminal row",
+      all frameFills [(80, 24), (32, 8), (1, 1)])
   ]
-  where inside h r t = let t' = clampTop h r t in t' >= 0 && t' <= r && r < t' + h
+  where
+    inside h r t = let t' = clampTop h r t in t' >= 0 && t' <= r && r < t' + h
+    frameFills size =
+      Vty.imageHeight (Vty.picImage (render size (scroll size (editor "short")))) == snd size
