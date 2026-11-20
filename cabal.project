@@ -1,3 +1,6 @@
 packages: .
 tests: True
 benchmarks: True
+-- ghc-lib-parser 9.14 accepts the GHC 9.14 bundled hpc package, whose
+-- published bounds still stop at base-4.20/time-1.14.
+allow-newer: hpc

@@ -198,7 +198,9 @@ resolve p = either (const p) id <$> tryIO (canonicalizePath p)
 -- hardlinked file is written in place instead -- trading atomicity for
 -- the link, which is the trade vim makes too.
 isShared :: FilePath -> IO Bool
-isShared p = (> 1) . linkCount <$> getFileStatus p
+isShared p = do
+  present <- doesFileExist p
+  if present then (> 1) . linkCount <$> getFileStatus p else pure False
 
 -- | The non-atomic path, used only where atomicity would destroy
 -- something else. Truncating an existing inode keeps every name that

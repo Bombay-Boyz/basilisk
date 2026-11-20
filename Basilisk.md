@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: ten modules, 1820 lines of code. The verification
+Status, in one line: ten modules, 1941 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -56,7 +56,8 @@ The current source audit is recorded in the latest revision notes.
 Event -> decode -> Action -> step -> Editor -> render -> Frame
 ```
 
-`decode`, `step` and `render` are pure. Only `Basilisk.Loop` performs IO.
+`decode`, `step` and `render` are pure. `Basilisk.Loop` owns IO and runs
+the formatter in the save effect before passing bytes to `Basilisk.File`.
 Every decision below exists to preserve that.
 
 ## 2.2 Editor state
@@ -254,8 +255,13 @@ data Effect = WriteFile !FilePath !Text !Bool !Bool | RequestQuit
 step :: Action -> Editor -> (Editor, [Effect])
 ```
 
-`step` performs no IO; it *describes* it. `NSave` computes the exact bytes,
-line endings included (2.9), so the shell has no editing decision left.
+`step` performs no IO; it *describes* it. `NSave` supplies serialized
+buffer text and the shell formats `.hs` and `.lhs` files before writing.
+Other file extensions are written byte-for-byte from the effect. A
+successful formatting change is recorded as one undoable edit and becomes
+the new saved buffer. Parse or formatter failures leave the file untouched.
+The formatter reads the matching Cabal component's language extensions
+and dependencies so parsing and operator fixities follow the project.
 The two booleans are the force-write override and `quitOnSuccess`.
 `:q` returns `RequestQuit` when the buffer is clean. `:wq` and `ZZ` set
 the write effect's `quitOnSuccess` flag; the shell requests termination
@@ -927,14 +933,14 @@ prototype, measured, before adoption.
 | `Basilisk.Decode` | vim's key grammar, as a Mealy machine | 180 | 284 |
 | `Basilisk.Render` | viewport, frame, status line | 82 | 130 |
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
-| `Basilisk.File` | open and write, encoding-safe | 168 | 272 |
-| `Basilisk.Loop` | the IO shell | 41 | 67 |
+| `Basilisk.File` | open and write, encoding-safe | 170 | 274 |
+| `Basilisk.Loop` | the IO shell and save-time formatting | 160 | 192 |
 | `Main` | argument parsing | 47 | 55 |
-| **Total** | | **1820** | |
+| **Total** | | **1941** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **1820 lines against a 3,000 ceiling**, leaving 1180
+specified — is **1941 lines against a 3,000 ceiling**, leaving 1059
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -948,13 +954,15 @@ Tests, which do not count against the ceiling:
 | `test/Gen.hs` | Unicode-hostile generators | 132 | 183 |
 | `test/Smoke.hs` | worked examples, in vim's vocabulary | 473 | 543 |
 | `test/Exhaustive.hs` | totality sweep | 52 | 65 |
+| `test/Formatter.hs` | save-time Haskell formatter integration | 70 | 75 |
 
 ## 2.14 Deliberately out of scope for v1
 
 Vimscript or Lua, a plugin framework, GUI/mouse interaction, a terminal
-emulator, session management, a full Haskell parser and LSP integration.
-Haskell and Markdown have lexical highlighting; parser-backed diagnostics,
-auto-indent, comments and structural navigation remain future work.
+emulator, session management, parser-backed diagnostics and LSP integration.
+Haskell save-time formatting is built in; live auto-indent while typing,
+comments and structural navigation remain future work. Markdown and plain
+text are not reformatted.
 Named registers, macros, text objects, visual mode, ex ranges and
 substitutions are also deferred.
 
@@ -1011,17 +1019,21 @@ library
   build-depends:
       base        >=4.16 && <5
     , bytestring  >=0.11 && <0.13
-    , containers  >=0.6  && <0.8
+    , containers  >=0.6  && <0.9
     , deepseq     >=1.4  && <1.6
     , directory   >=1.3  && <1.4
     , filepath    >=1.4  && <1.6
     , temporary   >=1.3  && <1.4
-    , time        >=1.11 && <1.15
+    , time        >=1.11 && <1.16
     , unix        >=2.7  && <2.9
     , text        >=2.0  && <2.2
     , text-icu    >=0.8  && <0.9
     , vty         >=6.0  && <7
     , vty-unix    >=0.2  && <0.5
+  if impl(ghc >=9.14)
+    build-depends: fourmolu >=0.20 && <0.22
+  else
+    build-depends: fourmolu >=0.12 && <0.13
 
 executable Basilisk
   import:             warnings
@@ -1051,6 +1063,13 @@ test-suite Basilisk-smoke
   hs-source-dirs:     test
   main-is:            Smoke.hs
   build-depends:      base, text, vty, Basilisk
+
+test-suite Basilisk-formatter
+  import:             warnings
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     test
+  main-is:            Formatter.hs
+  build-depends:      base, text, directory, filepath, temporary, Basilisk
 
 -- Totality sweep: every (mode, command, document) shape, forced to
 -- normal form, checked only for freedom from exceptions.
@@ -4119,7 +4138,9 @@ resolve p = either (const p) id <$> tryIO (canonicalizePath p)
 -- hardlinked file is written in place instead -- trading atomicity for
 -- the link, which is the trade vim makes too.
 isShared :: FilePath -> IO Bool
-isShared p = (> 1) . linkCount <$> getFileStatus p
+isShared p = do
+  present <- doesFileExist p
+  if present then (> 1) . linkCount <$> getFileStatus p else pure False
 
 -- | The non-atomic path, used only where atomicity would destroy
 -- something else. Truncating an existing inode keeps every name that
@@ -4208,14 +4229,32 @@ syncDir d = go
 -- the first keystroke, and what makes a terminal resize repaint: the
 -- size is re-read every iteration, so a resize needs no event handling,
 -- no 'Resize' action and no special case anywhere.
-module Basilisk.Loop (run) where
+module Basilisk.Loop (run, perform) where
 
-import Control.Exception (bracket)
+import Control.Exception (AsyncException, SomeException, bracket, displayException, evaluate, fromException, tryJust)
 import Control.Monad (foldM)
+import Control.DeepSeq (force)
+import Data.List (mapAccumL)
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Graphics.Vty as Vty
 import Graphics.Vty.Platform.Unix (mkVty)
+import Ormolu
+  ( CabalSearchResult (..)
+  , Config (..)
+  , RegionIndices
+  , defaultConfig
+  , detectSourceType
+  , ormolu
+  , getCabalInfoForSourceFile
+  , refineConfig
+  )
+import System.FilePath (takeExtension)
 
+import Basilisk.Cursor (desiredColumn, unicode)
 import Basilisk.Decode (KeyState, decode, initialKeyState)
+import qualified Basilisk.Document as Doc
 import qualified Basilisk.File as File
 import Basilisk.Render (render, scroll)
 import Basilisk.Step (step)
@@ -4253,16 +4292,123 @@ loop vty !ks !e = do
 -- records the stamp the writer observed rather than re-stat'ing and
 -- racing with itself. The quit bit is honored only after that success.
 perform :: (Editor, Bool) -> Effect -> IO (Editor, Bool)
-perform (e, quitRequested) (WriteFile p t force quitOnSuccess) = do
-  result <- File.writeDocument p t force (stamp e)
-  pure $ case result of
-    Left why -> (e { status = Just why }, quitRequested)
-    Right mark ->
-      ( (onBuffer (\b -> b { bSaved = bVersion b, bStamp = mark }) e)
-          { status = Just "written" }
-      , quitRequested || quitOnSuccess
-      )
+perform (e, quitRequested) (WriteFile p t forceWrite quitOnSuccess) = do
+  formatted <- formatForSave p t e
+  case formatted of
+    Left why -> pure (e { status = Just ("format failed: " <> why) }, quitRequested)
+    Right (prepared, output) -> do
+      result <- File.writeDocument p output forceWrite (stamp e)
+      pure $ case result of
+        Left why -> (e { status = Just why }, quitRequested)
+        Right mark ->
+          ( (onBuffer (\b -> b { bSaved = bVersion b, bStamp = mark }) prepared)
+              { status = Just "written"
+              }
+          , quitRequested || quitOnSuccess
+          )
 perform (e, _) RequestQuit = pure (e, True)
+
+formatForSave :: FilePath -> Text -> Editor -> IO (Either Text (Editor, Text))
+formatForSave p original e
+  | takeExtension p `elem` [".hs", ".lhs"] = do
+      result <- formatHaskell p (Doc.toText (document e))
+      pure (formatResult result)
+  | otherwise = pure (Right (e, original))
+ where
+  formatResult (Left why) = Left why
+  formatResult (Right output) =
+    let prepared = applyFormatted (Text.dropWhileEnd (== '\n') output) e
+     in Right (prepared, serialise prepared)
+
+applyFormatted :: Text -> Editor -> Editor
+applyFormatted formatted e
+  | formatted == Doc.toText (document e) = e
+  | otherwise = onBuffer update e
+ where
+  old = document e
+  new = Doc.fromText formatted
+  row = Doc.cursorRow old
+  repositioned = Doc.move unicode (desiredColumn (cursor e)) (Doc.Lines row) new
+  update b =
+    b
+      { bDocument = repositioned
+      , bHistory = History (take undoLimit (old : past (history e))) []
+      , bVersion = version e + 1
+      , bBornEmpty = False
+      }
+
+formatHaskell :: FilePath -> Text -> IO (Either Text Text)
+formatHaskell sourcePath source = do
+  result <-
+    ( tryJust synchronous $ do
+        config <- configFor sourcePath
+        output <- case takeExtension sourcePath of
+          ".lhs" -> case literateSource source of
+            Nothing -> pure source
+            Just (plain, markers, bird) ->
+              rebuildLiterate markers bird <$> ormolu config "<literate>.hs" plain
+          _ -> ormolu config sourcePath source
+        evaluate (force output)
+    ) ::
+      IO (Either SomeException Text)
+  pure (either (Left . friendlyError . Text.pack . displayException) Right result)
+ where
+  friendlyError = Text.replace "<literate>.hs" (Text.pack sourcePath)
+  synchronous exception = case fromException exception :: Maybe AsyncException of
+    Just _ -> Nothing
+    Nothing -> Just exception
+
+configFor :: FilePath -> IO (Config RegionIndices)
+configFor sourcePath = do
+  cabalResult <- getCabalInfoForSourceFile sourcePath
+  let cabalInfo = case cabalResult of
+        CabalNotFound -> Nothing
+        CabalDidNotMention info -> Just info
+        CabalFound info -> Just info
+      baseConfig = (defaultConfig :: Config RegionIndices) { cfgCheckIdempotence = True }
+  pure (refineConfig (detectSourceType sourcePath) cabalInfo Nothing Nothing baseConfig)
+
+literateSource :: Text -> Maybe (Text, Map.Map Text Text, Bool)
+literateSource source
+  | latex = Just (Text.intercalate "\n" plainRows, replacements, False)
+  | bird = Just (Text.intercalate "\n" plainRows, replacements, True)
+  | otherwise = Nothing
+ where
+  rows = Text.lines source
+  latex = any ("\\begin{code}" `Text.isPrefixOf`) rows
+  bird = any (">" `Text.isPrefixOf`) rows
+  prefix = markerPrefix source (0 :: Int)
+  (plainRows, replacements) =
+    let (_, tagged) = mapAccumL classify (False, 0 :: Int) rows
+     in (map fst tagged, Map.fromList (concatMap snd tagged))
+  classify (inside, index) line
+    | latex && "\\begin{code}" `Text.isPrefixOf` line =
+        ((True, index + 1), marked index line)
+    | latex && "\\end{code}" `Text.isPrefixOf` line =
+        ((False, index + 1), marked index line)
+    | latex && inside = ((inside, index), (line, []))
+    | latex = ((inside, index + 1), marked index line)
+    | ">" `Text.isPrefixOf` line = ((inside, index), (stripBird line, []))
+    | otherwise = ((inside, index + 1), marked index line)
+  marked index line =
+    let token = prefix <> Text.justifyRight 8 '0' (Text.pack (show index))
+     in (token, [(token, line)])
+  stripBird line = case Text.stripPrefix ">" line of
+    Nothing -> line
+    Just rest -> maybe rest id (Text.stripPrefix " " rest)
+  markerPrefix input index =
+    let candidate = "-- BASILISK_INTERNAL_LITERATE_" <> Text.pack (show index) <> "_"
+     in if candidate `Text.isInfixOf` input then markerPrefix input (index + 1) else candidate
+
+rebuildLiterate :: Map.Map Text Text -> Bool -> Text -> Text
+rebuildLiterate markers bird = Text.intercalate "\n" . snd . mapAccumL restore False . Text.lines
+ where
+  restore inside line = case Map.lookup (Text.strip line) markers of
+    Just original
+      | "\\begin{code}" `Text.isPrefixOf` original -> (True, original)
+      | "\\end{code}" `Text.isPrefixOf` original -> (False, original)
+      | otherwise -> (inside, original)
+    Nothing -> (inside, if bird then "> " <> line else line)
 ```
 
 ### `app/Main.hs`
@@ -4362,7 +4508,7 @@ ceiling=3000
 [ "$loc" -le "$ceiling" ] && ok "$loc / $ceiling" || bad "$loc exceeds the $ceiling-line ceiling"
 
 step "test suites"
-for suite in Basilisk-laws Basilisk-smoke Basilisk-exhaustive; do
+for suite in Basilisk-laws Basilisk-smoke Basilisk-exhaustive Basilisk-formatter; do
   if LANG=C.UTF-8 cabal run -v0 "test:$suite" >/tmp/$suite.log 2>&1; then
     ok "$suite: $(tail -1 /tmp/$suite.log | sed 's/^ *//')"
   else
@@ -6089,18 +6235,102 @@ main = do
       either (\ex -> ioError (userError (show a <> ": " <> show ex))) (const (pure ())) r
 ```
 
+### `test/Formatter.hs`
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+
+module Main (main) where
+
+import Control.Monad (unless)
+import Data.Text qualified as Text
+import Data.Text.IO qualified as Text
+import System.Directory (doesFileExist)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
+
+import Basilisk.Document qualified as Doc
+import Basilisk.Loop (perform)
+import Basilisk.Step (step)
+import Basilisk.Types
+
+main :: IO ()
+main = do
+  withSystemTempDirectory "basilisk-formatter" $ \dir -> do
+    let hs = dir </> "Main.hs"
+        lhs = dir </> "Literate.lhs"
+        latex = dir </> "Latex.lhs"
+        markdown = dir </> "notes.md"
+        broken = dir </> "Broken.hs"
+        editor file source = newEditor (Just file) source
+        write file source = perform (editor file source, False) (WriteFile file source False False)
+        writeQuit file source = perform (editor file source, False) (WriteFile file source False True)
+    Text.writeFile
+      (dir </> "formatter.cabal")
+      "cabal-version: 3.0\nname: formatter-fixture\nversion: 0.1.0.0\nbuild-type: Simple\nlibrary\n  hs-source-dirs: .\n  exposed-modules: Main\n  default-language: GHC2021\n  default-extensions: RankNTypes\n  build-depends: base\n"
+    (formatted, _) <- write hs "module Main where\n\nanswer=42\n\napply :: (forall a. a -> a) -> Int\napply f = f 1"
+    check ("Haskell is formatted before it is written: " <> show (status formatted)) (status formatted == Just "written")
+    savedHaskell <- Text.readFile hs
+    check "the formatted source is the persisted source" ("answer = 42" `Text.isInfixOf` savedHaskell)
+    check "Cabal default extensions are used by the formatter" ("apply :: (forall a. a -> a) -> Int" `Text.isInfixOf` savedHaskell)
+    check
+      "the formatted buffer is clean and undoable"
+      ( not (modified formatted)
+          && "answer = 42" `Text.isInfixOf` Doc.toText (document formatted)
+          && "answer=42" `Text.isInfixOf` Doc.toText (document (fst (step (InNormal (NUndo 1)) formatted)))
+      )
+    (literate, _) <- write lhs "Literate Haskell.\n> module Literate where\n>\n> value=7"
+    literateExists <- doesFileExist lhs
+    check ("literate Haskell file exists after save: " <> show (status literate)) literateExists
+    savedLiterate <- Text.readFile lhs
+    check
+      "literate Haskell prose is preserved and code formatted on save"
+      ( status literate == Just "written"
+          && "Literate Haskell." `Text.isPrefixOf` savedLiterate
+          && "value = 7" `Text.isInfixOf` savedLiterate
+      )
+    (latexFormatted, _) <- write latex "Literate prose.\n\\begin{code}\nmodule Latex where\nvalue=8\n\\end{code}"
+    savedLatex <- Text.readFile latex
+    check
+      "LaTeX literate Haskell is preserved and formatted"
+      ( status latexFormatted == Just "written"
+          && "Literate prose." `Text.isPrefixOf` savedLatex
+          && "\\begin{code}" `Text.isInfixOf` savedLatex
+          && "value = 8" `Text.isInfixOf` savedLatex
+      )
+    (plain, _) <- write markdown "#title\ntext  with   spaces"
+    savedMarkdown <- Text.readFile markdown
+    check "Markdown is saved without formatting" (status plain == Just "written" && savedMarkdown == "#title\ntext  with   spaces")
+    (rejected, quitRequested) <- writeQuit broken "module Broken where\nvalue ="
+    exists <- doesFileExist broken
+    check
+      "invalid Haskell is not written or quit"
+      ( not exists
+          && not quitRequested
+          && maybe False (Text.isPrefixOf "format failed:") (status rejected)
+      )
+  putStrLn "Haskell save formatter integration checks passed."
+
+check :: String -> Bool -> IO ()
+check label condition = unless condition (fail ("FAILED: " <> label))
+```
+
 ---
 
 # Part 4 — Verification
 
-Toolchain, matching the project's stated target exactly:
+Declared compiler compatibility starts at GHC 9.4.7. Cabal selects
+Fourmolu 0.12 for that compiler line and Fourmolu 0.20 or newer on GHC
+9.14. The current verification run uses:
 
 ```
-Ubuntu 24.04, GHC 9.4.7, cabal-install 3.8.1.0 (apt packages)
-text-2.0.2, containers-0.6.7, deepseq-1.4.8.0, bytestring-0.11.5.2
-text-icu-0.8.0.5 (against real libicu), vty-6.6, vty-unix-0.4.0.0
-hedgehog-1.7, temporary-1.3
+Linux, GHC 9.14.1, cabal-install from the workspace image
+text-2.1.3, containers-0.8, time-1.15, fourmolu-0.21.0.0
+text-icu-0.8.0.5 (against real libicu), hedgehog-1.7
 ```
+
+The GHC 9.4.7 dependency branch is declared but was not exercised in this
+verification run.
 
 Reproduce with:
 
@@ -6110,7 +6340,7 @@ cabal update && ./scripts/check.sh
 ```
 
 `check.sh` is the actual reproduction method: the build, the
-partial-function sweep, the line-count ceiling, all three suites, the
+partial-function sweep, the line-count ceiling, all four suites, the
 complexity benchmarks, and a check that this document still matches the
 sources it is generated from, in one script that CI runs unmodified.
 
@@ -6118,27 +6348,26 @@ sources it is generated from, in one script that CI runs unmodified.
 
 ### Current source audit
 
-The checks below are historical results from an earlier source revision.
-They do not establish that the current checkout has just been built or
-tested. A compile-only build of the current checkout has completed with zero
-warnings; test suites and benchmarks were not run in this audit. The current
-audit corrected descriptor ownership during `fsync`,
+The detailed filesystem and modal-editor results below are historical
+results from earlier source revisions. The current formatter change is
+verified with `cabal build all`, the full test harness, and a dedicated
+filesystem-backed save-formatting suite. The current audit corrected
+descriptor ownership during `fsync`,
 made file and directory sync failures visible, made hard-link inspection
 fail closed, and changed open and metadata IO failures into editor status
 messages. Invalid UTF-8 input is opened read-only, preventing an ordinary
 save from replacing undecodable source bytes with an empty buffer.
 
-The declared scope remains a single-buffer, Unix modal editor. The four
-features completed in this audit are described in the current architecture;
-parser-backed Haskell services and the other items in the limitation list
-remain unfinished work. Historical test results are not evidence for these
-new paths.
+The declared scope remains a single-buffer, Unix modal editor. Haskell
+formatting now runs automatically on save for `.hs` and `.lhs` files;
+Markdown and plain text are saved unchanged. Live auto-indent and
+parser-backed Haskell services remain unfinished work.
 
 Nothing below is a stub or a "should type-check" claim; the container
 has Hackage access and every dependency is the real one.
 
-- **`cabal build all` from a clean tree: zero warnings, zero errors**
-  across library, executable, all three suites and the benchmarks,
+- **`./scripts/check.sh`: all checks passed** with zero build warnings
+  across library, executable, all four suites and the benchmarks,
   under the full flag set. `Basilisk.Cursor` runs against genuine ICU.
 - **`Basilisk-laws` (Hedgehog): 39 properties, 400 tests each (one
   guarding the no-op-commit bug class at 4,000), 0

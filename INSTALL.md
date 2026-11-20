@@ -64,17 +64,18 @@ discard. Ctrl-C is deliberately not bound.
 ```
 
 This is exactly what CI runs: a zero-warning build, a partial-function
-sweep, the 3,000-line ceiling, three test suites, the complexity
+sweep, the 3,000-line ceiling, four test suites, the complexity
 benchmarks, and a check that `Basilisk.md` still matches the sources.
 Run it before and after any change.
 
 Individually, if you want them:
 
 ```sh
-cabal test                      # all three suites
+cabal test                      # all four suites
 cabal run Basilisk-laws         # 34 Hedgehog properties
 cabal run Basilisk-smoke        # 136 worked examples
 cabal run Basilisk-exhaustive   # every (mode, command, document) shape
+cabal run Basilisk-formatter    # save-time Haskell formatting integration
 cabal bench                     # scaling benchmarks
 ```
 

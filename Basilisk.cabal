@@ -38,17 +38,21 @@ library
   build-depends:
       base        >=4.16 && <5
     , bytestring  >=0.11 && <0.13
-    , containers  >=0.6  && <0.8
+    , containers  >=0.6  && <0.9
     , deepseq     >=1.4  && <1.6
     , directory   >=1.3  && <1.4
     , filepath    >=1.4  && <1.6
     , temporary   >=1.3  && <1.4
-    , time        >=1.11 && <1.15
+    , time        >=1.11 && <1.16
     , unix        >=2.7  && <2.9
     , text        >=2.0  && <2.2
     , text-icu    >=0.8  && <0.9
     , vty         >=6.0  && <7
     , vty-unix    >=0.2  && <0.5
+  if impl(ghc >=9.14)
+    build-depends: fourmolu >=0.20 && <0.22
+  else
+    build-depends: fourmolu >=0.12 && <0.13
 
 executable Basilisk
   import:             warnings
@@ -78,6 +82,13 @@ test-suite Basilisk-smoke
   hs-source-dirs:     test
   main-is:            Smoke.hs
   build-depends:      base, text, vty, Basilisk
+
+test-suite Basilisk-formatter
+  import:             warnings
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     test
+  main-is:            Formatter.hs
+  build-depends:      base, text, directory, filepath, temporary, Basilisk
 
 -- Totality sweep: every (mode, command, document) shape, forced to
 -- normal form, checked only for freedom from exceptions.

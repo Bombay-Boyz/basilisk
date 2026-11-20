@@ -4,10 +4,10 @@ A modal terminal text editor for Haskell, written in Haskell, under a
 hard ceiling of 3,000 lines of code.
 
 **Status: usable, not finished.** It will not lose your file — that
-much is tested against a real filesystem. It does not yet do anything
-Haskell-specific, which is the point of the project and the largest
-outstanding gap. See [Basilisk.md](Basilisk.md) for the architecture,
-what has been verified, and how.
+much is tested against a real filesystem. It formats Haskell source on
+save; semantic editing services remain future work. See
+[Basilisk.md](Basilisk.md) for the architecture, what has been verified,
+and how.
 
 ## Build
 
@@ -24,9 +24,13 @@ cabal run Basilisk -- yourfile.hs
 To leave the editor: `:q`, or `:q!` to discard unsaved changes.
 
 `./scripts/check.sh` runs everything CI runs: the build with zero
-warnings, a partial-function sweep, the line-count ceiling, three test
+warnings, a partial-function sweep, the line-count ceiling, four test
 suites, the complexity benchmarks, and a check that the handoff
 document still matches the sources.
+
+Saving `.hs` and `.lhs` files formats them automatically with the built-in
+Fourmolu library. Formatting errors prevent the write; Markdown and plain
+text files are saved as written.
 
 ## Keys
 
@@ -60,8 +64,8 @@ Counts prefix a command and multiply: `3dw`, `5j`, `2d3w`.
 
 ## What it does not do yet
 
-Haskell and Markdown lexical highlighting is available. No parser-backed
-diagnostics, auto-indent or LSP. No visual mode, text objects, marks, or
+Haskell and Markdown lexical highlighting is available. No live auto-indent,
+parser-backed diagnostics or LSP. No visual mode, text objects, marks, or
 named registers. No macros. Multiple buffers exist as a data
 split but nothing yet switches between them; no
 splits or config file. Unix only.

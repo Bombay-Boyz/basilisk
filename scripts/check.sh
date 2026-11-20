@@ -30,7 +30,7 @@ ceiling=3000
 [ "$loc" -le "$ceiling" ] && ok "$loc / $ceiling" || bad "$loc exceeds the $ceiling-line ceiling"
 
 step "test suites"
-for suite in Basilisk-laws Basilisk-smoke Basilisk-exhaustive; do
+for suite in Basilisk-laws Basilisk-smoke Basilisk-exhaustive Basilisk-formatter; do
   if LANG=C.UTF-8 cabal run -v0 "test:$suite" >/tmp/$suite.log 2>&1; then
     ok "$suite: $(tail -1 /tmp/$suite.log | sed 's/^ *//')"
   else

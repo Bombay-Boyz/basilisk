@@ -23,7 +23,7 @@ MODULES = [
     ('Basilisk.Render',   'src/Basilisk/Render.hs',   'viewport, frame, status line'),
     ('Basilisk.Syntax',   'src/Basilisk/Syntax.hs',   'Haskell and Markdown lexical highlighting'),
     ('Basilisk.File',     'src/Basilisk/File.hs',     'open and write, encoding-safe'),
-    ('Basilisk.Loop',     'src/Basilisk/Loop.hs',     'the IO shell'),
+    ('Basilisk.Loop',     'src/Basilisk/Loop.hs',     'the IO shell and save-time formatting'),
     ('Main',              'app/Main.hs',              'argument parsing'),
 ]
 EXTRA = [
@@ -35,6 +35,7 @@ TESTS = [
     ('test/Gen.hs', 'Unicode-hostile generators'),
     ('test/Smoke.hs', "worked examples, in vim's vocabulary"),
     ('test/Exhaustive.hs', 'totality sweep'),
+    ('test/Formatter.hs', 'save-time Haskell formatter integration'),
 ]
 
 rows, total = [], 0
@@ -107,7 +108,8 @@ The current source audit is recorded in the latest revision notes.
 Event -> decode -> Action -> step -> Editor -> render -> Frame
 ```
 
-`decode`, `step` and `render` are pure. Only `Basilisk.Loop` performs IO.
+`decode`, `step` and `render` are pure. `Basilisk.Loop` owns IO and runs
+the formatter in the save effect before passing bytes to `Basilisk.File`.
 Every decision below exists to preserve that.
 
 ## 2.2 Editor state
@@ -305,8 +307,13 @@ data Effect = WriteFile !FilePath !Text !Bool !Bool | RequestQuit
 step :: Action -> Editor -> (Editor, [Effect])
 ```
 
-`step` performs no IO; it *describes* it. `NSave` computes the exact bytes,
-line endings included (2.9), so the shell has no editing decision left.
+`step` performs no IO; it *describes* it. `NSave` supplies serialized
+buffer text and the shell formats `.hs` and `.lhs` files before writing.
+Other file extensions are written byte-for-byte from the effect. A
+successful formatting change is recorded as one undoable edit and becomes
+the new saved buffer. Parse or formatter failures leave the file untouched.
+The formatter reads the matching Cabal component's language extensions
+and dependencies so parsing and operator fixities follow the project.
 The two booleans are the force-write override and `quitOnSuccess`.
 `:q` returns `RequestQuit` when the buffer is clean. `:wq` and `ZZ` set
 the write effect's `quitOnSuccess` flag; the shell requests termination
@@ -990,9 +997,10 @@ Tests, which do not count against the ceiling:
 ## 2.14 Deliberately out of scope for v1
 
 Vimscript or Lua, a plugin framework, GUI/mouse interaction, a terminal
-emulator, session management, a full Haskell parser and LSP integration.
-Haskell and Markdown have lexical highlighting; parser-backed diagnostics,
-auto-indent, comments and structural navigation remain future work.
+emulator, session management, parser-backed diagnostics and LSP integration.
+Haskell save-time formatting is built in; live auto-indent while typing,
+comments and structural navigation remain future work. Markdown and plain
+text are not reformatted.
 Named registers, macros, text objects, visual mode, ex ranges and
 substitutions are also deferred.
 
@@ -1027,14 +1035,18 @@ doc += f"""---
 
 # Part 4 — Verification
 
-Toolchain, matching the project's stated target exactly:
+Declared compiler compatibility starts at GHC 9.4.7. Cabal selects
+Fourmolu 0.12 for that compiler line and Fourmolu 0.20 or newer on GHC
+9.14. The current verification run uses:
 
 ```
-Ubuntu 24.04, GHC 9.4.7, cabal-install 3.8.1.0 (apt packages)
-text-2.0.2, containers-0.6.7, deepseq-1.4.8.0, bytestring-0.11.5.2
-text-icu-0.8.0.5 (against real libicu), vty-6.6, vty-unix-0.4.0.0
-hedgehog-1.7, temporary-1.3
+Linux, GHC 9.14.1, cabal-install from the workspace image
+text-2.1.3, containers-0.8, time-1.15, fourmolu-0.21.0.0
+text-icu-0.8.0.5 (against real libicu), hedgehog-1.7
 ```
+
+The GHC 9.4.7 dependency branch is declared but was not exercised in this
+verification run.
 
 Reproduce with:
 
@@ -1044,7 +1056,7 @@ cabal update && ./scripts/check.sh
 ```
 
 `check.sh` is the actual reproduction method: the build, the
-partial-function sweep, the line-count ceiling, all three suites, the
+partial-function sweep, the line-count ceiling, all four suites, the
 complexity benchmarks, and a check that this document still matches the
 sources it is generated from, in one script that CI runs unmodified.
 
@@ -1052,27 +1064,26 @@ sources it is generated from, in one script that CI runs unmodified.
 
 ### Current source audit
 
-The checks below are historical results from an earlier source revision.
-They do not establish that the current checkout has just been built or
-tested. A compile-only build of the current checkout has completed with zero
-warnings; test suites and benchmarks were not run in this audit. The current
-audit corrected descriptor ownership during `fsync`,
+The detailed filesystem and modal-editor results below are historical
+results from earlier source revisions. The current formatter change is
+verified with `cabal build all`, the full test harness, and a dedicated
+filesystem-backed save-formatting suite. The current audit corrected
+descriptor ownership during `fsync`,
 made file and directory sync failures visible, made hard-link inspection
 fail closed, and changed open and metadata IO failures into editor status
 messages. Invalid UTF-8 input is opened read-only, preventing an ordinary
 save from replacing undecodable source bytes with an empty buffer.
 
-The declared scope remains a single-buffer, Unix modal editor. The four
-features completed in this audit are described in the current architecture;
-parser-backed Haskell services and the other items in the limitation list
-remain unfinished work. Historical test results are not evidence for these
-new paths.
+The declared scope remains a single-buffer, Unix modal editor. Haskell
+formatting now runs automatically on save for `.hs` and `.lhs` files;
+Markdown and plain text are saved unchanged. Live auto-indent and
+parser-backed Haskell services remain unfinished work.
 
 Nothing below is a stub or a "should type-check" claim; the container
 has Hackage access and every dependency is the real one.
 
-- **`cabal build all` from a clean tree: zero warnings, zero errors**
-  across library, executable, all three suites and the benchmarks,
+- **`./scripts/check.sh`: all checks passed** with zero build warnings
+  across library, executable, all four suites and the benchmarks,
   under the full flag set. `Basilisk.Cursor` runs against genuine ICU.
 - **`Basilisk-laws` (Hedgehog): 39 properties, 400 tests each (one
   guarding the no-op-commit bug class at 4,000), 0
