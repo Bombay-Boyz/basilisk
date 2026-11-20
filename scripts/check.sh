@@ -45,6 +45,17 @@ else
   cat /tmp/bench.log; bad "a scaling expectation was broken"
 fi
 
+step "PTY terminal regressions"
+if command -v python3 >/dev/null && exe=$(cabal list-bin exe:Basilisk 2>/dev/null); then
+  if python3 test/Terminal.py "$exe" >/tmp/terminal.log 2>&1; then
+    ok "startup, mode/status placement, save/quit, formatter error, resize, cleanup"
+  else
+    cat /tmp/terminal.log; bad "PTY terminal regressions"
+  fi
+else
+  bad "Python 3 or executable path unavailable for PTY checks"
+fi
+
 step "the handoff document matches the sources"
 # Part 3 is spliced from the source tree, so a stale document is a
 # process failure rather than an editing mistake.

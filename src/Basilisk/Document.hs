@@ -35,6 +35,9 @@ module Basilisk.Document
   , window
     -- * The reach algebra (2.4a)
   , Motion (..)
+  , TextObject (..)
+  , ObjectScope (..)
+  , ObjectKind (..)
   , Operator (..)
   , Reach (..)
   , reach
@@ -67,7 +70,8 @@ import Control.DeepSeq (NFData)
 import Data.Bifunctor (first)
 import qualified Data.Char as Char
 import Data.Foldable (toList)
-import Data.Maybe (fromMaybe)
+import Data.List (find, sortOn)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Sequence (Seq, ViewL (..), ViewR (..), (><), (<|), (|>))
 import qualified Data.Sequence as Seq
 import Data.Text (Text)
@@ -338,6 +342,7 @@ data Reach
   = Chars !Int      -- ^ signed, within the current row
   | Lines !Int      -- ^ signed, whole rows
   | Upto !Int !Int  -- ^ an absolute @(row, offset)@, charwise, possibly on another row
+  | Span !Int !Int !Int !Int -- ^ explicit half-open start/end coordinates
   deriving (Eq, Show, Generic, NFData)
 
 -- | A named span relative to the cursor. Pure data: no motion knows what
@@ -359,6 +364,16 @@ data Motion
   | MParagraph !Bool   -- ^ @}@ and @{@: to the next or previous blank row
   | MMatch             -- ^ @%@: the bracket matching the one at or after the cursor
   | MColumn            -- ^ @|@: the column a count names
+  | MTextObject !TextObject
+  deriving (Eq, Show, Generic, NFData)
+
+data ObjectScope = InnerObject | AroundObject
+  deriving (Eq, Show, Generic, NFData)
+
+data ObjectKind = WordObject | QuoteObject !Char | DelimitedObject !Char | UnsupportedObject !Char
+  deriving (Eq, Show, Generic, NFData)
+
+data TextObject = TextObject !ObjectScope !ObjectKind
   deriving (Eq, Show, Generic, NFData)
 
 -- | What to do with the span: keep the cut document ('Delete') or discard
@@ -400,6 +415,7 @@ toLines :: Document -> Reach -> Reach
 toLines _ r@(Lines _)  = r
 toLines _ (Chars _)    = Lines 0
 toLines d (Upto r _)   = Lines (r - cursorRow d)
+toLines _ (Span r _ endRow _) = Lines (endRow - r)
 
 -- | Compile a counted motion to the 'Reach' it names. The count enters
 -- here, in closed form -- @5j@ is one 'Lines' 5, not five moves, so a
@@ -429,6 +445,127 @@ reach u n (MBigWord b)   = \d -> toward u d (bigWordTarget u b n d)
 reach _ n (MParagraph b) = \d -> Lines (paragraphStep b n d)
 reach u _ MMatch         = \d -> maybe (Chars 0) (uncurry Upto) (matchBracket d) `orStay` u
 reach u n MColumn        = \d -> towardAbsolute u d (max 0 (n - 1))
+reach u n (MTextObject object) = \d -> maybe (Chars 0) id (textObjectReach u n object d)
+
+textObjectReach :: Unicode -> Int -> TextObject -> Document -> Maybe Reach
+textObjectReach u n object d = do
+  (lo, hi) <- objectBounds u (max 1 n) object (currentLine d) (unOffset (cursorCol d))
+  pure (Span (cursorRow d) lo (cursorRow d) hi)
+
+objectBounds :: Unicode -> Int -> TextObject -> Text -> Int -> Maybe (Int, Int)
+objectBounds u n (TextObject scope WordObject) line cursor = wordObjectBounds u scope n line cursor
+objectBounds _ n (TextObject scope (QuoteObject quote)) line cursor =
+  choosePair scope n cursor (quotePairs quote line)
+objectBounds _ n (TextObject scope (DelimitedObject closer)) line cursor =
+  choosePair scope n cursor (delimiterPairs (openerFor closer) line)
+objectBounds _ _ (TextObject _ (UnsupportedObject _)) _ _ = Nothing
+
+choosePair :: ObjectScope -> Int -> Int -> [(Int, Int)] -> Maybe (Int, Int)
+choosePair scope n cursor pairs = case drop (max 1 n - 1) enclosing of
+  (open, close) : _ -> Just (case scope of
+    InnerObject -> (open + 1, close)
+    AroundObject -> (open, close + 1))
+  [] -> Nothing
+  where
+    enclosing = sortOn (\(open, close) -> close - open)
+      (filter (\(open, close) -> open <= cursor && cursor <= close) pairs)
+
+wordObjectBounds :: Unicode -> ObjectScope -> Int -> Text -> Int -> Maybe (Int, Int)
+wordObjectBounds u scope count' line cursor = do
+  current <- find (\(lo, hi, _) -> lo <= cursor && cursor < hi) runs
+  let (start, end, kind) = current
+      lo = runLeft kind start runs
+      hi = runRight kind end runs
+      countedEnd = extendWords (count' - 1) hi runs
+      (aroundLo, aroundHi) = case scope of
+        InnerObject -> (lo, countedEnd)
+        AroundObject -> aroundWhitespace lo countedEnd runs
+  pure (aroundLo, aroundHi)
+  where runs = clusterRuns u line
+
+clusterRuns :: Unicode -> Text -> [(Int, Int, CharClass)]
+clusterRuns u line = mapMaybe classifyRange (adjacent (clusters u line))
+  where
+    classifyRange (lo, hi)
+      | hi <= lo = Nothing
+      | otherwise = case Text.uncons (Text.drop lo line) of
+          Just (ch, _) -> Just (lo, hi, classify ch)
+          Nothing -> Nothing
+    adjacent (lo : hi : rest) = (lo, hi) : adjacent (hi : rest)
+    adjacent _ = []
+
+runLeft :: CharClass -> Int -> [(Int, Int, CharClass)] -> Int
+runLeft kind boundary ranges = case find (\(_, hi, found) -> hi == boundary && found == kind) ranges of
+  Just (lo, _, _) -> runLeft kind lo ranges
+  Nothing -> boundary
+
+runRight :: CharClass -> Int -> [(Int, Int, CharClass)] -> Int
+runRight kind boundary ranges = case find (\(lo, _, found) -> lo == boundary && found == kind) ranges of
+  Just (_, hi, _) -> runRight kind hi ranges
+  Nothing -> boundary
+
+extendWords :: Int -> Int -> [(Int, Int, CharClass)] -> Int
+extendWords remaining boundary ranges
+  | remaining <= 0 = boundary
+  | otherwise =
+      let following = dropWhile (\(_, hi, _) -> hi <= boundary) ranges
+          nextWord = dropWhile (\(_, _, kind) -> kind == Blank) following
+      in case nextWord of
+           (_, hi, kind) : _ -> extendWords (remaining - 1) (runRight kind hi ranges) ranges
+           [] -> boundary
+
+aroundWhitespace :: Int -> Int -> [(Int, Int, CharClass)] -> (Int, Int)
+aroundWhitespace lo hi ranges =
+  let following = dropWhile (\(_, end, _) -> end <= hi) ranges
+      trailing = takeWhile (\(start, _, kind) -> start >= hi && kind == Blank) following
+      preceding = takeWhile (\(_, end, kind) -> end <= lo && kind == Blank) (reverse ranges)
+  in case trailing of
+       _ : _ -> (lo, foldl (\_ (_, end, _) -> end) hi trailing)
+       [] -> (foldl (\_ (start, _, _) -> start) lo preceding, hi)
+
+quotePairs :: Char -> Text -> [(Int, Int)]
+quotePairs quote line = pair (reverse opens)
+  where
+    (_, _, opens) = Text.foldl' step (0, 0 :: Int, []) line
+    step (offset, slashes, found) ch =
+      ( offset + 1
+      , if ch == '\\' then slashes + 1 else 0
+      , if ch == quote && even slashes then offset : found else found
+      )
+    pair (open : close : rest) = (open, close) : pair rest
+    pair _ = []
+
+delimiterPairs :: Char -> Text -> [(Int, Int)]
+delimiterPairs opener line =
+  [ (start, end)
+  | (found, start, end) <- collect [] [] (zip [0 ..] (Text.unpack line))
+  , found == opener
+  ]
+  where
+    collect _ pairs [] = pairs
+    collect stack pairs ((offset, ch) : rest)
+      | isOpener ch = collect ((ch, offset) : stack) pairs rest
+      | isCloser ch = case stack of
+          (open, start) : remaining
+            | closerFor open == ch -> collect remaining ((open, start, offset) : pairs) rest
+          _ -> collect stack pairs rest
+      | otherwise = collect stack pairs rest
+    isOpener ch = ch `elem` ("([{<" :: String)
+    isCloser ch = ch `elem` (")]}>" :: String)
+
+openerFor :: Char -> Char
+openerFor ')' = '('
+openerFor ']' = '['
+openerFor '}' = '{'
+openerFor '>' = '<'
+openerFor c = c
+
+closerFor :: Char -> Char
+closerFor '(' = ')'
+closerFor '[' = ']'
+closerFor '{' = '}'
+closerFor '<' = '>'
+closerFor c = c
 
 -- | The signed character distance to the boundary @n@ grapheme clusters
 -- away, clamped to the line. This is the only definition of "one
@@ -539,6 +676,7 @@ wordStep t = case Text.uncons t of
 -- target display column on the landing line.
 move :: Unicode -> Column -> Reach -> Document -> Document
 move _ _ (Upto r o) d = focusAt (const (Offset o)) r (lines' d)
+move _ _ (Span r o _ _) d = focusAt (const (Offset o)) r (lines' d)
 move _ _ (Chars n) d = shift n d
 move u c (Lines k) d = focusAt (columnToOffset u c) (cursorRow d + k) (lines' d)
 
@@ -571,6 +709,7 @@ inclusive (MBigWord _)    = False
 inclusive (MParagraph _)  = False
 inclusive MMatch          = True    -- @d%@ deletes both brackets
 inclusive MColumn         = False
+inclusive (MTextObject _) = False
 
 -- | Extend an inclusive motion's span by the cluster it stopped on,
 -- which is what makes @de@ delete the letter @e@ stops on.
@@ -797,16 +936,24 @@ findNth back n pat d = at (max 1 n - 1) ordered
 excise :: Reach -> Document -> Maybe (Document, Text)
 excise (Chars n) d = fmap (first (\ln -> d { here = ln })) (cut n (here d))
 excise (Upto r o) d
+  = exciseBetween (cursorRow d, unOffset (cursorCol d)) (r, o) d
+excise (Span r1 c1 r2 c2) d = exciseBetween (r1, c1) (r2, c2) d
+excise (Lines k) d
+  | lineCount d == 1 && Text.null (currentLine d) = Nothing
+  | otherwise = Just (focusAt (const 0) lo (pre >< post), joinRows gone)
+  where (lo, pre, gone, post) = rows k d
+
+exciseBetween :: (Int, Int) -> (Int, Int) -> Document -> Maybe (Document, Text)
+exciseBetween start end d
   | lo == hi  = Nothing
   | otherwise = Just (focusAt (const (Offset (snd lo))) (fst lo) (pre >< (kept <| post)), joinRows cut')
   where
     ls        = lines' d
     rowAt i   = fromMaybe Text.empty (Seq.lookup i ls)
     clampTo i = max 0 . min (Text.length (rowAt i))
-    row       = max 0 (min r (Seq.length ls - 1))
-    here'     = (cursorRow d, unOffset (cursorCol d))
-    there     = (row, clampTo row o)
-    (lo, hi)  = if here' <= there then (here', there) else (there, here')
+    point (r, o) = let row = max 0 (min r (Seq.length ls - 1)) in (row, clampTo row o)
+    (a, b)   = (point start, point end)
+    (lo, hi)  = if a <= b then (a, b) else (b, a)
     (pre, rest) = Seq.splitAt (fst lo) ls
     (grp, post) = Seq.splitAt (fst hi - fst lo + 1) rest
     firstRow  = fromMaybe Text.empty (Seq.lookup 0 grp)
@@ -819,11 +966,6 @@ excise (Upto r o) d
       | fst lo == fst hi = Seq.singleton (Text.take (snd hi - snd lo) (Text.drop (snd lo) firstRow))
       | otherwise        = (Text.drop (snd lo) firstRow <| Seq.drop 1 (Seq.take (Seq.length grp - 1) grp))
                              |> Text.take (snd hi) lastRow
-
-excise (Lines k) d
-  | lineCount d == 1 && Text.null (currentLine d) = Nothing
-  | otherwise = Just (focusAt (const 0) lo (pre >< post), joinRows gone)
-  where (lo, pre, gone, post) = rows k d
 
 -- | Replace the rows a linewise reach names with one empty row: vim's
 -- @cc@, where the row survives and its contents do not.
@@ -949,6 +1091,25 @@ caseOp :: (Text -> Text) -> Reach -> Document -> Maybe (Document, Text)
 caseOp f (Lines k)  d = transformRows f k d
 caseOp f (Chars n)  d = first (\ln -> d { here = ln }) <$> transformLineZ f n (here d)
 caseOp f r@(Upto {}) d = case toLines d r of Lines k -> transformRows f k d; _ -> Nothing
+caseOp f (Span startRow startCol endRow endCol) d
+  | startRow == endRow = transformSpan f startRow startCol endCol d
+  | otherwise = transformRows f (endRow - startRow) d
+
+transformSpan :: (Text -> Text) -> Int -> Int -> Int -> Document -> Maybe (Document, Text)
+transformSpan f row start end d = case Seq.lookup row ls of
+  Nothing -> Nothing
+  Just line
+    | start >= end -> Nothing
+    | otherwise ->
+        let lo = max 0 (min start (Text.length line))
+            hi = max lo (min end (Text.length line))
+            selected = Text.take (hi - lo) (Text.drop lo line)
+            changed = Text.take lo line <> f selected <> Text.drop hi line
+            next = Seq.update row changed ls
+        in if Text.null selected || changed == line
+             then Nothing
+             else Just (focusAt (const (cursorCol d)) (cursorRow d) next, selected)
+  where ls = lines' d
 
 swapCase :: Char -> Char
 swapCase c

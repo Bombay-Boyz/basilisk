@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: ten modules, 1960 lines of code. The verification
+Status, in one line: ten modules, 2131 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -926,21 +926,21 @@ prototype, measured, before adoption.
 
 | Module | Responsibility | Code | With comments |
 |---|---|---|---|
-| `Basilisk.Document` | zipper, coordinates, the reach algebra | 612 | 1180 |
+| `Basilisk.Document` | zipper, coordinates, the reach algebra | 756 | 1341 |
 | `Basilisk.Cursor` | the sticky column, ICU display width | 89 | 165 |
-| `Basilisk.Types` | modes, tagged commands, effects, editor | 234 | 407 |
-| `Basilisk.Step` | the pure transition function | 295 | 534 |
-| `Basilisk.Decode` | vim's key grammar, as a Mealy machine | 180 | 284 |
+| `Basilisk.Types` | modes, tagged commands, effects, editor | 240 | 413 |
+| `Basilisk.Step` | the pure transition function | 297 | 536 |
+| `Basilisk.Decode` | vim's key grammar, as a Mealy machine | 199 | 303 |
 | `Basilisk.Render` | viewport, frame, status line | 82 | 130 |
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
 | `Basilisk.File` | open and write, encoding-safe | 170 | 274 |
 | `Basilisk.Loop` | the IO shell and save-time formatting | 160 | 192 |
 | `Main` | argument parsing | 47 | 55 |
-| **Total** | | **1960** | |
+| **Total** | | **2131** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **1960 lines against a 3,000 ceiling**, leaving 1040
+specified — is **2131 lines against a 3,000 ceiling**, leaving 869
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -952,7 +952,7 @@ Tests, which do not count against the ceiling:
 |---|---|---|---|
 | `test/Laws.hs` | the laws, as Hedgehog properties | 426 | 718 |
 | `test/Gen.hs` | Unicode-hostile generators | 135 | 186 |
-| `test/Smoke.hs` | worked examples, in vim's vocabulary | 483 | 553 |
+| `test/Smoke.hs` | worked examples, in vim's vocabulary | 507 | 577 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
 | `test/Formatter.hs` | save-time Haskell formatter integration | 70 | 75 |
 
@@ -963,8 +963,10 @@ emulator, session management, parser-backed diagnostics and LSP integration.
 Haskell save-time formatting is built in; live auto-indent while typing,
 comments and structural navigation remain future work. Markdown and plain
 text are not reformatted.
-Named registers, macros, text objects, visual mode, ex ranges and
-substitutions are also deferred.
+Named registers, macros, visual mode, ex ranges and substitutions are
+also deferred. Operator text objects support words, quotes and balanced
+delimiters through @iw@/@aw@, @i"@/@a"@ and @i(@/@a(@ (with matching
+bracket aliases), including counts and nested delimiters.
 
 ---
 
@@ -1134,6 +1136,9 @@ module Basilisk.Document
   , window
     -- * The reach algebra (2.4a)
   , Motion (..)
+  , TextObject (..)
+  , ObjectScope (..)
+  , ObjectKind (..)
   , Operator (..)
   , Reach (..)
   , reach
@@ -1166,7 +1171,8 @@ import Control.DeepSeq (NFData)
 import Data.Bifunctor (first)
 import qualified Data.Char as Char
 import Data.Foldable (toList)
-import Data.Maybe (fromMaybe)
+import Data.List (find, sortOn)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Sequence (Seq, ViewL (..), ViewR (..), (><), (<|), (|>))
 import qualified Data.Sequence as Seq
 import Data.Text (Text)
@@ -1437,6 +1443,7 @@ data Reach
   = Chars !Int      -- ^ signed, within the current row
   | Lines !Int      -- ^ signed, whole rows
   | Upto !Int !Int  -- ^ an absolute @(row, offset)@, charwise, possibly on another row
+  | Span !Int !Int !Int !Int -- ^ explicit half-open start/end coordinates
   deriving (Eq, Show, Generic, NFData)
 
 -- | A named span relative to the cursor. Pure data: no motion knows what
@@ -1458,6 +1465,16 @@ data Motion
   | MParagraph !Bool   -- ^ @}@ and @{@: to the next or previous blank row
   | MMatch             -- ^ @%@: the bracket matching the one at or after the cursor
   | MColumn            -- ^ @|@: the column a count names
+  | MTextObject !TextObject
+  deriving (Eq, Show, Generic, NFData)
+
+data ObjectScope = InnerObject | AroundObject
+  deriving (Eq, Show, Generic, NFData)
+
+data ObjectKind = WordObject | QuoteObject !Char | DelimitedObject !Char | UnsupportedObject !Char
+  deriving (Eq, Show, Generic, NFData)
+
+data TextObject = TextObject !ObjectScope !ObjectKind
   deriving (Eq, Show, Generic, NFData)
 
 -- | What to do with the span: keep the cut document ('Delete') or discard
@@ -1499,6 +1516,7 @@ toLines :: Document -> Reach -> Reach
 toLines _ r@(Lines _)  = r
 toLines _ (Chars _)    = Lines 0
 toLines d (Upto r _)   = Lines (r - cursorRow d)
+toLines _ (Span r _ endRow _) = Lines (endRow - r)
 
 -- | Compile a counted motion to the 'Reach' it names. The count enters
 -- here, in closed form -- @5j@ is one 'Lines' 5, not five moves, so a
@@ -1528,6 +1546,127 @@ reach u n (MBigWord b)   = \d -> toward u d (bigWordTarget u b n d)
 reach _ n (MParagraph b) = \d -> Lines (paragraphStep b n d)
 reach u _ MMatch         = \d -> maybe (Chars 0) (uncurry Upto) (matchBracket d) `orStay` u
 reach u n MColumn        = \d -> towardAbsolute u d (max 0 (n - 1))
+reach u n (MTextObject object) = \d -> maybe (Chars 0) id (textObjectReach u n object d)
+
+textObjectReach :: Unicode -> Int -> TextObject -> Document -> Maybe Reach
+textObjectReach u n object d = do
+  (lo, hi) <- objectBounds u (max 1 n) object (currentLine d) (unOffset (cursorCol d))
+  pure (Span (cursorRow d) lo (cursorRow d) hi)
+
+objectBounds :: Unicode -> Int -> TextObject -> Text -> Int -> Maybe (Int, Int)
+objectBounds u n (TextObject scope WordObject) line cursor = wordObjectBounds u scope n line cursor
+objectBounds _ n (TextObject scope (QuoteObject quote)) line cursor =
+  choosePair scope n cursor (quotePairs quote line)
+objectBounds _ n (TextObject scope (DelimitedObject closer)) line cursor =
+  choosePair scope n cursor (delimiterPairs (openerFor closer) line)
+objectBounds _ _ (TextObject _ (UnsupportedObject _)) _ _ = Nothing
+
+choosePair :: ObjectScope -> Int -> Int -> [(Int, Int)] -> Maybe (Int, Int)
+choosePair scope n cursor pairs = case drop (max 1 n - 1) enclosing of
+  (open, close) : _ -> Just (case scope of
+    InnerObject -> (open + 1, close)
+    AroundObject -> (open, close + 1))
+  [] -> Nothing
+  where
+    enclosing = sortOn (\(open, close) -> close - open)
+      (filter (\(open, close) -> open <= cursor && cursor <= close) pairs)
+
+wordObjectBounds :: Unicode -> ObjectScope -> Int -> Text -> Int -> Maybe (Int, Int)
+wordObjectBounds u scope count' line cursor = do
+  current <- find (\(lo, hi, _) -> lo <= cursor && cursor < hi) runs
+  let (start, end, kind) = current
+      lo = runLeft kind start runs
+      hi = runRight kind end runs
+      countedEnd = extendWords (count' - 1) hi runs
+      (aroundLo, aroundHi) = case scope of
+        InnerObject -> (lo, countedEnd)
+        AroundObject -> aroundWhitespace lo countedEnd runs
+  pure (aroundLo, aroundHi)
+  where runs = clusterRuns u line
+
+clusterRuns :: Unicode -> Text -> [(Int, Int, CharClass)]
+clusterRuns u line = mapMaybe classifyRange (adjacent (clusters u line))
+  where
+    classifyRange (lo, hi)
+      | hi <= lo = Nothing
+      | otherwise = case Text.uncons (Text.drop lo line) of
+          Just (ch, _) -> Just (lo, hi, classify ch)
+          Nothing -> Nothing
+    adjacent (lo : hi : rest) = (lo, hi) : adjacent (hi : rest)
+    adjacent _ = []
+
+runLeft :: CharClass -> Int -> [(Int, Int, CharClass)] -> Int
+runLeft kind boundary ranges = case find (\(_, hi, found) -> hi == boundary && found == kind) ranges of
+  Just (lo, _, _) -> runLeft kind lo ranges
+  Nothing -> boundary
+
+runRight :: CharClass -> Int -> [(Int, Int, CharClass)] -> Int
+runRight kind boundary ranges = case find (\(lo, _, found) -> lo == boundary && found == kind) ranges of
+  Just (_, hi, _) -> runRight kind hi ranges
+  Nothing -> boundary
+
+extendWords :: Int -> Int -> [(Int, Int, CharClass)] -> Int
+extendWords remaining boundary ranges
+  | remaining <= 0 = boundary
+  | otherwise =
+      let following = dropWhile (\(_, hi, _) -> hi <= boundary) ranges
+          nextWord = dropWhile (\(_, _, kind) -> kind == Blank) following
+      in case nextWord of
+           (_, hi, kind) : _ -> extendWords (remaining - 1) (runRight kind hi ranges) ranges
+           [] -> boundary
+
+aroundWhitespace :: Int -> Int -> [(Int, Int, CharClass)] -> (Int, Int)
+aroundWhitespace lo hi ranges =
+  let following = dropWhile (\(_, end, _) -> end <= hi) ranges
+      trailing = takeWhile (\(start, _, kind) -> start >= hi && kind == Blank) following
+      preceding = takeWhile (\(_, end, kind) -> end <= lo && kind == Blank) (reverse ranges)
+  in case trailing of
+       _ : _ -> (lo, foldl (\_ (_, end, _) -> end) hi trailing)
+       [] -> (foldl (\_ (start, _, _) -> start) lo preceding, hi)
+
+quotePairs :: Char -> Text -> [(Int, Int)]
+quotePairs quote line = pair (reverse opens)
+  where
+    (_, _, opens) = Text.foldl' step (0, 0 :: Int, []) line
+    step (offset, slashes, found) ch =
+      ( offset + 1
+      , if ch == '\\' then slashes + 1 else 0
+      , if ch == quote && even slashes then offset : found else found
+      )
+    pair (open : close : rest) = (open, close) : pair rest
+    pair _ = []
+
+delimiterPairs :: Char -> Text -> [(Int, Int)]
+delimiterPairs opener line =
+  [ (start, end)
+  | (found, start, end) <- collect [] [] (zip [0 ..] (Text.unpack line))
+  , found == opener
+  ]
+  where
+    collect _ pairs [] = pairs
+    collect stack pairs ((offset, ch) : rest)
+      | isOpener ch = collect ((ch, offset) : stack) pairs rest
+      | isCloser ch = case stack of
+          (open, start) : remaining
+            | closerFor open == ch -> collect remaining ((open, start, offset) : pairs) rest
+          _ -> collect stack pairs rest
+      | otherwise = collect stack pairs rest
+    isOpener ch = ch `elem` ("([{<" :: String)
+    isCloser ch = ch `elem` (")]}>" :: String)
+
+openerFor :: Char -> Char
+openerFor ')' = '('
+openerFor ']' = '['
+openerFor '}' = '{'
+openerFor '>' = '<'
+openerFor c = c
+
+closerFor :: Char -> Char
+closerFor '(' = ')'
+closerFor '[' = ']'
+closerFor '{' = '}'
+closerFor '<' = '>'
+closerFor c = c
 
 -- | The signed character distance to the boundary @n@ grapheme clusters
 -- away, clamped to the line. This is the only definition of "one
@@ -1638,6 +1777,7 @@ wordStep t = case Text.uncons t of
 -- target display column on the landing line.
 move :: Unicode -> Column -> Reach -> Document -> Document
 move _ _ (Upto r o) d = focusAt (const (Offset o)) r (lines' d)
+move _ _ (Span r o _ _) d = focusAt (const (Offset o)) r (lines' d)
 move _ _ (Chars n) d = shift n d
 move u c (Lines k) d = focusAt (columnToOffset u c) (cursorRow d + k) (lines' d)
 
@@ -1670,6 +1810,7 @@ inclusive (MBigWord _)    = False
 inclusive (MParagraph _)  = False
 inclusive MMatch          = True    -- @d%@ deletes both brackets
 inclusive MColumn         = False
+inclusive (MTextObject _) = False
 
 -- | Extend an inclusive motion's span by the cluster it stopped on,
 -- which is what makes @de@ delete the letter @e@ stops on.
@@ -1896,16 +2037,24 @@ findNth back n pat d = at (max 1 n - 1) ordered
 excise :: Reach -> Document -> Maybe (Document, Text)
 excise (Chars n) d = fmap (first (\ln -> d { here = ln })) (cut n (here d))
 excise (Upto r o) d
+  = exciseBetween (cursorRow d, unOffset (cursorCol d)) (r, o) d
+excise (Span r1 c1 r2 c2) d = exciseBetween (r1, c1) (r2, c2) d
+excise (Lines k) d
+  | lineCount d == 1 && Text.null (currentLine d) = Nothing
+  | otherwise = Just (focusAt (const 0) lo (pre >< post), joinRows gone)
+  where (lo, pre, gone, post) = rows k d
+
+exciseBetween :: (Int, Int) -> (Int, Int) -> Document -> Maybe (Document, Text)
+exciseBetween start end d
   | lo == hi  = Nothing
   | otherwise = Just (focusAt (const (Offset (snd lo))) (fst lo) (pre >< (kept <| post)), joinRows cut')
   where
     ls        = lines' d
     rowAt i   = fromMaybe Text.empty (Seq.lookup i ls)
     clampTo i = max 0 . min (Text.length (rowAt i))
-    row       = max 0 (min r (Seq.length ls - 1))
-    here'     = (cursorRow d, unOffset (cursorCol d))
-    there     = (row, clampTo row o)
-    (lo, hi)  = if here' <= there then (here', there) else (there, here')
+    point (r, o) = let row = max 0 (min r (Seq.length ls - 1)) in (row, clampTo row o)
+    (a, b)   = (point start, point end)
+    (lo, hi)  = if a <= b then (a, b) else (b, a)
     (pre, rest) = Seq.splitAt (fst lo) ls
     (grp, post) = Seq.splitAt (fst hi - fst lo + 1) rest
     firstRow  = fromMaybe Text.empty (Seq.lookup 0 grp)
@@ -1918,11 +2067,6 @@ excise (Upto r o) d
       | fst lo == fst hi = Seq.singleton (Text.take (snd hi - snd lo) (Text.drop (snd lo) firstRow))
       | otherwise        = (Text.drop (snd lo) firstRow <| Seq.drop 1 (Seq.take (Seq.length grp - 1) grp))
                              |> Text.take (snd hi) lastRow
-
-excise (Lines k) d
-  | lineCount d == 1 && Text.null (currentLine d) = Nothing
-  | otherwise = Just (focusAt (const 0) lo (pre >< post), joinRows gone)
-  where (lo, pre, gone, post) = rows k d
 
 -- | Replace the rows a linewise reach names with one empty row: vim's
 -- @cc@, where the row survives and its contents do not.
@@ -2048,6 +2192,25 @@ caseOp :: (Text -> Text) -> Reach -> Document -> Maybe (Document, Text)
 caseOp f (Lines k)  d = transformRows f k d
 caseOp f (Chars n)  d = first (\ln -> d { here = ln }) <$> transformLineZ f n (here d)
 caseOp f r@(Upto {}) d = case toLines d r of Lines k -> transformRows f k d; _ -> Nothing
+caseOp f (Span startRow startCol endRow endCol) d
+  | startRow == endRow = transformSpan f startRow startCol endCol d
+  | otherwise = transformRows f (endRow - startRow) d
+
+transformSpan :: (Text -> Text) -> Int -> Int -> Int -> Document -> Maybe (Document, Text)
+transformSpan f row start end d = case Seq.lookup row ls of
+  Nothing -> Nothing
+  Just line
+    | start >= end -> Nothing
+    | otherwise ->
+        let lo = max 0 (min start (Text.length line))
+            hi = max lo (min end (Text.length line))
+            selected = Text.take (hi - lo) (Text.drop lo line)
+            changed = Text.take lo line <> f selected <> Text.drop hi line
+            next = Seq.update row changed ls
+        in if Text.null selected || changed == line
+             then Nothing
+             else Just (focusAt (const (cursorCol d)) (cursorRow d) next, selected)
+  where ls = lines' d
 
 swapCase :: Char -> Char
 swapCase c
@@ -2463,6 +2626,9 @@ module Basilisk.Types
   ( -- * Re-exports from the document algebra
     Direction (..)
   , Motion (..)
+  , TextObject (..)
+  , ObjectScope (..)
+  , ObjectKind (..)
   , Operator (..)
     -- * Modes and commands
   , PromptKind (..)
@@ -2521,6 +2687,9 @@ import Basilisk.Document
   , Direction (..)
   , Document
   , Motion (..)
+  , TextObject (..)
+  , ObjectScope (..)
+  , ObjectKind (..)
   , Operator (..)
   , fromText
   , toText
@@ -3082,6 +3251,7 @@ apply o r e = maybe (idle o) (project o) (Doc.operate o r (document e))
       Doc.Lines _  -> True
       Doc.Chars _  -> False
       Doc.Upto _ _ -> False
+      Doc.Span _ _ _ _ -> False
 
 -- | Insert mode's four entry points. @a@ steps right within the line and
 -- is therefore the one place the gap is legitimately allowed past the
@@ -3354,6 +3524,7 @@ moveBy r e = sync (withDocument (gap (Doc.move unicode (desiredColumn (cursor e)
     sync = case r of
       Doc.Chars _  -> resync
       Doc.Upto _ _ -> resync   -- a jump names a column; it does not preserve one
+      Doc.Span _ _ _ _ -> resync
       Doc.Lines _  -> id
 
 -- | Apply an edit that may decline. A declined edit changes nothing --
@@ -3443,6 +3614,7 @@ data KeyState = KeyState
     -- decoder has to hold a half-built motion. Storing the function
     -- rather than the key that started it keeps the four cases in one
     -- table instead of four branches here.
+  , awaitingObject :: !Bool
   , awaitingChar :: !(Maybe (Int -> Char -> NormalCmd))
     -- ^ @r@ takes its replacement as the next keystroke, the same
     -- shape of wait as 'awaiting' but completing to a command directly
@@ -3450,7 +3622,7 @@ data KeyState = KeyState
   }
 
 initialKeyState :: KeyState
-initialKeyState = KeyState Nothing Nothing Nothing Nothing Nothing
+initialKeyState = KeyState Nothing Nothing Nothing Nothing False Nothing
 
 -- | Ctrl-C is deliberately unbound. It quit, unconditionally and
 -- without checking for unsaved changes, which made the most commonly
@@ -3528,7 +3700,8 @@ normalKey st k ms
 -- immediately, so they need their own clause ahead of the generic one.
 -- A pending @f@\/@t@ or @r@ consumes the very next key, whatever it is.
 normalKey st (Vty.KChar c) _
-  | Just mk <- awaiting st     = complete st { awaiting = Nothing } (count st) (mk c)
+  | Just mk <- awaiting st, not (awaitingObject st) || validTextObjectKey c = complete st { awaiting = Nothing } (count st) (mk c)
+  | Just _ <- awaiting st = (initialKeyState, Nothing)
   | Just mc <- awaitingChar st = emit (mc (count st) c)
 normalKey st (Vty.KChar '/') _
   | Just (k, op) <- pending st =
@@ -3556,17 +3729,17 @@ normalKey st (Vty.KChar c) _
       emit (NOperate (bounded (k * count st)) op MLine)
   | Just op <- operatorOf c, isNothing (pending st) =
       (initialKeyState { pending = Just (count st, op) }, Nothing)
+  | Just _ <- pending st, c == 'i' || c == 'a' =
+      (st { awaiting = Just (textObjectMotion (if c == 'i' then InnerObject else AroundObject)), awaitingObject = True }, Nothing)
   -- Vim's one irregular pairing: @cw@ acts as @ce@, so that changing a
   -- word does not swallow the space after it and leave you typing two
   -- words joined together.
-  | Just mk <- targetOf c = (st { awaiting = Just mk }, Nothing)
+  | Just mk <- targetOf c = (st { awaiting = Just mk, awaitingObject = False }, Nothing)
   | c == 'r' = (st { awaitingChar = Just NReplace }, Nothing)
   | Just m <- motionOf c = complete st (count st) (if changingAWord st m then MWordEnd else m)
   -- A command key is not a motion, so it cannot complete a pending
   -- operator. Executing it anyway would silently drop the operator --
-  -- @ciw@ would enter insert mode and type "w" as text. Vim would be
-  -- waiting for a text object here; until those exist (see the pending
-  -- list) the honest answer is to abandon the sequence.
+  -- text-object prefixes have already been consumed above.
   | Just _ <- pending st, Just _ <- commandOf c = (initialKeyState, Nothing)
   | Just f <- commandOf c = emit (f (count st))
   | otherwise = (initialKeyState, Nothing)
@@ -3658,6 +3831,23 @@ targetOf 't' = Just (MTo False True)
 targetOf 'F' = Just (MTo True False)
 targetOf 'T' = Just (MTo True True)
 targetOf _   = Nothing
+
+textObjectMotion :: ObjectScope -> Char -> Motion
+textObjectMotion scope key = MTextObject (TextObject scope kind)
+  where
+    kind
+      | key == 'w' = WordObject
+      | key `elem` ("\"'`" :: String) = QuoteObject key
+      | key `elem` ("()[]{}<>" :: String) = DelimitedObject (opener key)
+      | otherwise = UnsupportedObject key
+    opener ')' = '('
+    opener ']' = '['
+    opener '}' = '{'
+    opener '>' = '<'
+    opener c = c
+
+validTextObjectKey :: Char -> Bool
+validTextObjectKey c = c == 'w' || c `elem` ("\"'`()[]{}<>" :: String)
 
 arrowOf :: Vty.Key -> Maybe Direction
 arrowOf Vty.KLeft  = Just DLeft
@@ -4522,6 +4712,17 @@ if LANG=C.UTF-8 cabal run -v0 bench:Basilisk-scaling >/tmp/bench.log 2>&1; then
   ok "no scaling regression"
 else
   cat /tmp/bench.log; bad "a scaling expectation was broken"
+fi
+
+step "PTY terminal regressions"
+if command -v python3 >/dev/null && exe=$(cabal list-bin exe:Basilisk 2>/dev/null); then
+  if python3 test/Terminal.py "$exe" >/tmp/terminal.log 2>&1; then
+    ok "startup, mode/status placement, save/quit, formatter error, resize, cleanup"
+  else
+    cat /tmp/terminal.log; bad "PTY terminal regressions"
+  fi
+else
+  bad "Python 3 or executable path unavailable for PTY checks"
 fi
 
 step "the handoff document matches the sources"
@@ -5677,6 +5878,17 @@ withEol el fe = onBuffer (\b -> b { bEol = el, bFinalEol = fe })
 run :: [NormalCmd] -> Editor -> Editor
 run cs e0 = foldl (\e c -> fst (step (InNormal c) e)) e0 cs
 
+typeKeys :: String -> Editor -> Editor
+typeKeys input = go initialKeyState (map key (chars input))
+  where
+    key (Vty.KChar '\ESC') = Vty.KEsc
+    key k = k
+    go _ [] e = e
+    go st (k : ks) e =
+      let (st', action) = decode (mode e) st (Vty.EvKey k [])
+          e' = maybe e (\a -> fst (step a e)) action
+      in go st' ks e'
+
 body :: Editor -> Text
 body = Doc.toText . document
 
@@ -5854,6 +6066,20 @@ vocabularyChecks =
   , ("c on an empty span still enters insert", mode (run [NOperate 1 Change MWord] (editor "")) == Insert Fresh)
   , ("cw cuts the word and enters insert",
       body cw == " world" && mode cw == Insert Fresh && fmap clipText (register cw) == Just "hello")
+  , ("diw deletes the word under the cursor", body (typeKeys "diw" (at 2 (editor "alpha beta"))) == " beta")
+  , ("daw includes following whitespace", body (typeKeys "daw" (at 2 (editor "alpha beta"))) == "beta")
+  , ("d2iw selects two adjacent word objects", body (typeKeys "d2iw" (at 1 (editor "one two three"))) == " three")
+  , ("ciw replaces just the word", body (typeKeys "ciwZ\ESC" (at 2 (editor "alpha beta"))) == "Z beta")
+  , ("yiw leaves text unchanged and records the word", let e = typeKeys "yiw" (at 2 (editor "alpha beta")) in body e == "alpha beta" && fmap clipText (register e) == Just "alpha")
+  , ("gUiw changes only the selected text object", body (typeKeys "gUiw" (at 2 (editor "alpha beta"))) == "ALPHA beta")
+  , ("di\" keeps the quote delimiters", body (typeKeys "di\"" (at 6 (editor "say \"hello\" end"))) == "say \"\" end")
+  , ("da\" removes quote delimiters", body (typeKeys "da\"" (at 6 (editor "say \"hello\" end"))) == "say  end")
+  , ("di( chooses the innermost balanced pair", body (typeKeys "di(" (at 4 (editor "f(a(b)c)"))) == "f(a()c)")
+  , ("da( removes the innermost balanced pair", body (typeKeys "da(" (at 4 (editor "f(a(b)c)"))) == "f(ac)")
+  , ("a closing bracket selects its matching pair", body (typeKeys "di)" (at 5 (editor "f(a(b)c)"))) == "f(a()c)")
+  , ("a count selects the next enclosing object", body (typeKeys "d2i(" (at 4 (editor "f(a(b)c)"))) == "f()")
+  , ("unmatched text objects are no-ops", let e = typeKeys "di(\"" (at 1 (editor "abc")) in body e == "abc" && version e == 0)
+  , ("iw treats a combining grapheme as one word cluster", body (typeKeys "diw" (at 1 (editor "e\769 rest"))) == " rest")
   , ("cc empties the line but keeps it",
       body cc == "\nsecond\nthird" && Doc.lineCount (document cc) == 3 && mode cc == Insert Fresh)
   , ("cc on an already empty line changes nothing and marks nothing",
@@ -6100,8 +6326,8 @@ decodeChecks =
   , ("insert mode types text", keys (Insert Fresh) (chars "ab") == [InInsert (IInput "a"), InInsert (IInput "b")])
   , ("the prompt accumulates its own buffer",
       keys (Prompt ExCommand "") (chars "wq") == [InPrompt (PInput "w"), InPrompt (PInput "q")])
-  , ("a command key aborts a pending operator rather than dropping it",
-      keys Normal (chars "ci") == [])
+  , ("text object prefixes remain pending for their object key",
+      keys Normal (chars "ci") == [] && keys Normal (chars "diw") == [InNormal (NOperate 1 Delete (MTextObject (TextObject InnerObject WordObject)))])
   , ("~ and 3~ decode as ToggleCase over MChar DRight",
       keys Normal (chars "~") == [InNormal (NOperate 1 ToggleCase (MChar DRight))]
         && keys Normal (chars "3~") == [InNormal (NOperate 3 ToggleCase (MChar DRight))])
@@ -6124,11 +6350,10 @@ decodeChecks =
   , ("gg still works after the g-prefix gained other uses",
       keys Normal (chars "gg") == [InNormal (NMove 1 MGotoLine)])
   -- Aborting discards the operator and the next key is read fresh, as
-  -- vim does after an invalid operator target. So the p in cip is a
-  -- paste, not part of a text object -- which is the honest outcome
-  -- until text objects exist.
+  -- vim does after an invalid operator target. An invalid object key is
+  -- consumed and cancels the pending operation.
   , ("and the key after an abort is read fresh",
-      keys Normal (chars "cip") == [InNormal (NPaste 1 True)])
+      keys Normal (chars "cip") == [])
   , ("the same keys alone still work",
       keys Normal (chars "ip") == [InNormal (NEnterInsert 1 Before), InNormal (NPaste 1 True)])
   , ("an unknown key aborts a pending operator", keys Normal (chars "d") <> keys Normal [Vty.KFun 5] == [])

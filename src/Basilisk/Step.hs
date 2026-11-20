@@ -216,6 +216,7 @@ apply o r e = maybe (idle o) (project o) (Doc.operate o r (document e))
       Doc.Lines _  -> True
       Doc.Chars _  -> False
       Doc.Upto _ _ -> False
+      Doc.Span _ _ _ _ -> False
 
 -- | Insert mode's four entry points. @a@ steps right within the line and
 -- is therefore the one place the gap is legitimately allowed past the
@@ -488,6 +489,7 @@ moveBy r e = sync (withDocument (gap (Doc.move unicode (desiredColumn (cursor e)
     sync = case r of
       Doc.Chars _  -> resync
       Doc.Upto _ _ -> resync   -- a jump names a column; it does not preserve one
+      Doc.Span _ _ _ _ -> resync
       Doc.Lines _  -> id
 
 -- | Apply an edit that may decline. A declined edit changes nothing --

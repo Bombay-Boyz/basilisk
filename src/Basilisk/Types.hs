@@ -9,6 +9,9 @@ module Basilisk.Types
   ( -- * Re-exports from the document algebra
     Direction (..)
   , Motion (..)
+  , TextObject (..)
+  , ObjectScope (..)
+  , ObjectKind (..)
   , Operator (..)
     -- * Modes and commands
   , PromptKind (..)
@@ -67,6 +70,9 @@ import Basilisk.Document
   , Direction (..)
   , Document
   , Motion (..)
+  , TextObject (..)
+  , ObjectScope (..)
+  , ObjectKind (..)
   , Operator (..)
   , fromText
   , toText

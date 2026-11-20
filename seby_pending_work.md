@@ -48,7 +48,7 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 **Acceptance:** every failure mode leaves the original file intact and the user can understand why saving failed. Repeated saves of an already formatted file produce no content or history change.
 
-### P0.3 Build a terminal-driven regression harness
+### P0.3 Build a terminal-driven regression harness — complete
 
 - Add scripted PTY scenarios for startup, insert/edit, save, quit, resize, and error display.
 - Assert the status and mode indicators remain anchored at the bottom row at small, normal, and resized terminal dimensions.
@@ -56,7 +56,7 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 - Cover zero-size and narrow terminals, Unicode grapheme movement, wide glyphs, tabs, CR/LF variants, ANSI-like file contents, and terminal capability differences.
 - Keep pure state-machine tests and terminal integration tests separate so failures identify the responsible layer.
 
-**Acceptance:** key user-visible behaviors are reproduced automatically in a PTY; terminal regressions do not depend on a maintainer manually noticing a misplaced status line.
+**Completed:** `test/Terminal.py` exercises save/quit, mode-bar placement, failed Haskell formatting, resize, alternate-screen cleanup, and terminal attribute restoration through a real PTY. The repository check script runs it in CI. Broader platform and Unicode terminal matrix coverage remains under P0.4.
 
 ### P0.4 Define behavior and safety guarantees for the first release
 
@@ -69,13 +69,13 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ## P1 — Editing completeness and daily usability
 
-### P1.1 Add text objects
+### P1.1 Add text objects — complete
 
 - Implement inner and around objects for words, quoted strings, and balanced delimiters (`iw`/`aw`, `i"`/`a"`, `i(`/`a(`, plus bracket aliases where appropriate).
 - Represent the selected range through the existing reach/operation algebra so delete, change, and yank share one selection definition.
 - Specify behavior at empty lines, unmatched delimiters, nested delimiters, cursor-on-delimiter positions, counts, and Unicode grapheme boundaries.
 
-**Acceptance:** each object works with `d`, `c`, and `y`; randomized laws cover range bounds and no-op behavior; examples match the documented Vim subset.
+**Completed:** `iw`/`aw`, quote objects, and nested balanced delimiter objects are represented as explicit spans and compose with `d`, `c`, and `y`. Focused tests cover counts, unmatched pairs, nesting, and combining graphemes. Broader randomized span laws remain desirable.
 
 ### P1.2 Add Visual mode
 
@@ -254,13 +254,11 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 ## Suggested first sequence
 
 1. Verify every supported GHC release line from 9.10 onward in CI; settle the Hackage `hpc` bound workaround.
-2. Add PTY regression coverage for save/quit/error/resize and bottom-anchored status rendering.
-3. Finish formatter failure, literate-source, idempotence, cursor, newline, Cabal, and configuration policy tests.
-4. Implement text objects against the existing reach algebra.
-5. Implement Visual mode and reuse the same span semantics.
-6. Add live indentation after the settings and Haskell syntax context needed to make it reliable.
-7. Build versioned semantic snapshots, diagnostics, then HLS integration.
-8. Reassess the 3,000-line ceiling and workspace/session scope before buffer management or LSP growth.
+2. Finish formatter failure, literate-source, idempotence, cursor, newline, Cabal, and configuration policy tests.
+3. Implement Visual mode and reuse the same span semantics.
+4. Add live indentation after the settings and Haskell syntax context needed to make it reliable.
+5. Build versioned semantic snapshots, diagnostics, then HLS integration.
+6. Reassess the 3,000-line ceiling and workspace/session scope before buffer management or LSP growth.
 
 ## Completion standard
 

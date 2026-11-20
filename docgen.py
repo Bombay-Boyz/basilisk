@@ -1001,8 +1001,10 @@ emulator, session management, parser-backed diagnostics and LSP integration.
 Haskell save-time formatting is built in; live auto-indent while typing,
 comments and structural navigation remain future work. Markdown and plain
 text are not reformatted.
-Named registers, macros, text objects, visual mode, ex ranges and
-substitutions are also deferred.
+Named registers, macros, visual mode, ex ranges and substitutions are
+also deferred. Operator text objects support words, quotes and balanced
+delimiters through @iw@/@aw@, @i"@/@a"@ and @i(@/@a(@ (with matching
+bracket aliases), including counts and nested delimiters.
 
 ---
 

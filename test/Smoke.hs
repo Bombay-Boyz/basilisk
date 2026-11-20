@@ -51,6 +51,17 @@ withEol el fe = onBuffer (\b -> b { bEol = el, bFinalEol = fe })
 run :: [NormalCmd] -> Editor -> Editor
 run cs e0 = foldl (\e c -> fst (step (InNormal c) e)) e0 cs
 
+typeKeys :: String -> Editor -> Editor
+typeKeys input = go initialKeyState (map key (chars input))
+  where
+    key (Vty.KChar '\ESC') = Vty.KEsc
+    key k = k
+    go _ [] e = e
+    go st (k : ks) e =
+      let (st', action) = decode (mode e) st (Vty.EvKey k [])
+          e' = maybe e (\a -> fst (step a e)) action
+      in go st' ks e'
+
 body :: Editor -> Text
 body = Doc.toText . document
 
@@ -228,6 +239,20 @@ vocabularyChecks =
   , ("c on an empty span still enters insert", mode (run [NOperate 1 Change MWord] (editor "")) == Insert Fresh)
   , ("cw cuts the word and enters insert",
       body cw == " world" && mode cw == Insert Fresh && fmap clipText (register cw) == Just "hello")
+  , ("diw deletes the word under the cursor", body (typeKeys "diw" (at 2 (editor "alpha beta"))) == " beta")
+  , ("daw includes following whitespace", body (typeKeys "daw" (at 2 (editor "alpha beta"))) == "beta")
+  , ("d2iw selects two adjacent word objects", body (typeKeys "d2iw" (at 1 (editor "one two three"))) == " three")
+  , ("ciw replaces just the word", body (typeKeys "ciwZ\ESC" (at 2 (editor "alpha beta"))) == "Z beta")
+  , ("yiw leaves text unchanged and records the word", let e = typeKeys "yiw" (at 2 (editor "alpha beta")) in body e == "alpha beta" && fmap clipText (register e) == Just "alpha")
+  , ("gUiw changes only the selected text object", body (typeKeys "gUiw" (at 2 (editor "alpha beta"))) == "ALPHA beta")
+  , ("di\" keeps the quote delimiters", body (typeKeys "di\"" (at 6 (editor "say \"hello\" end"))) == "say \"\" end")
+  , ("da\" removes quote delimiters", body (typeKeys "da\"" (at 6 (editor "say \"hello\" end"))) == "say  end")
+  , ("di( chooses the innermost balanced pair", body (typeKeys "di(" (at 4 (editor "f(a(b)c)"))) == "f(a()c)")
+  , ("da( removes the innermost balanced pair", body (typeKeys "da(" (at 4 (editor "f(a(b)c)"))) == "f(ac)")
+  , ("a closing bracket selects its matching pair", body (typeKeys "di)" (at 5 (editor "f(a(b)c)"))) == "f(a()c)")
+  , ("a count selects the next enclosing object", body (typeKeys "d2i(" (at 4 (editor "f(a(b)c)"))) == "f()")
+  , ("unmatched text objects are no-ops", let e = typeKeys "di(\"" (at 1 (editor "abc")) in body e == "abc" && version e == 0)
+  , ("iw treats a combining grapheme as one word cluster", body (typeKeys "diw" (at 1 (editor "e\769 rest"))) == " rest")
   , ("cc empties the line but keeps it",
       body cc == "\nsecond\nthird" && Doc.lineCount (document cc) == 3 && mode cc == Insert Fresh)
   , ("cc on an already empty line changes nothing and marks nothing",
@@ -474,8 +499,8 @@ decodeChecks =
   , ("insert mode types text", keys (Insert Fresh) (chars "ab") == [InInsert (IInput "a"), InInsert (IInput "b")])
   , ("the prompt accumulates its own buffer",
       keys (Prompt ExCommand "") (chars "wq") == [InPrompt (PInput "w"), InPrompt (PInput "q")])
-  , ("a command key aborts a pending operator rather than dropping it",
-      keys Normal (chars "ci") == [])
+  , ("text object prefixes remain pending for their object key",
+      keys Normal (chars "ci") == [] && keys Normal (chars "diw") == [InNormal (NOperate 1 Delete (MTextObject (TextObject InnerObject WordObject)))])
   , ("~ and 3~ decode as ToggleCase over MChar DRight",
       keys Normal (chars "~") == [InNormal (NOperate 1 ToggleCase (MChar DRight))]
         && keys Normal (chars "3~") == [InNormal (NOperate 3 ToggleCase (MChar DRight))])
@@ -498,11 +523,10 @@ decodeChecks =
   , ("gg still works after the g-prefix gained other uses",
       keys Normal (chars "gg") == [InNormal (NMove 1 MGotoLine)])
   -- Aborting discards the operator and the next key is read fresh, as
-  -- vim does after an invalid operator target. So the p in cip is a
-  -- paste, not part of a text object -- which is the honest outcome
-  -- until text objects exist.
+  -- vim does after an invalid operator target. An invalid object key is
+  -- consumed and cancels the pending operation.
   , ("and the key after an abort is read fresh",
-      keys Normal (chars "cip") == [InNormal (NPaste 1 True)])
+      keys Normal (chars "cip") == [])
   , ("the same keys alone still work",
       keys Normal (chars "ip") == [InNormal (NEnterInsert 1 Before), InNormal (NPaste 1 True)])
   , ("an unknown key aborts a pending operator", keys Normal (chars "d") <> keys Normal [Vty.KFun 5] == [])

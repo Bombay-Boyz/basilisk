@@ -38,6 +38,7 @@ data KeyState = KeyState
     -- decoder has to hold a half-built motion. Storing the function
     -- rather than the key that started it keeps the four cases in one
     -- table instead of four branches here.
+  , awaitingObject :: !Bool
   , awaitingChar :: !(Maybe (Int -> Char -> NormalCmd))
     -- ^ @r@ takes its replacement as the next keystroke, the same
     -- shape of wait as 'awaiting' but completing to a command directly
@@ -45,7 +46,7 @@ data KeyState = KeyState
   }
 
 initialKeyState :: KeyState
-initialKeyState = KeyState Nothing Nothing Nothing Nothing Nothing
+initialKeyState = KeyState Nothing Nothing Nothing Nothing False Nothing
 
 -- | Ctrl-C is deliberately unbound. It quit, unconditionally and
 -- without checking for unsaved changes, which made the most commonly
@@ -123,7 +124,8 @@ normalKey st k ms
 -- immediately, so they need their own clause ahead of the generic one.
 -- A pending @f@\/@t@ or @r@ consumes the very next key, whatever it is.
 normalKey st (Vty.KChar c) _
-  | Just mk <- awaiting st     = complete st { awaiting = Nothing } (count st) (mk c)
+  | Just mk <- awaiting st, not (awaitingObject st) || validTextObjectKey c = complete st { awaiting = Nothing } (count st) (mk c)
+  | Just _ <- awaiting st = (initialKeyState, Nothing)
   | Just mc <- awaitingChar st = emit (mc (count st) c)
 normalKey st (Vty.KChar '/') _
   | Just (k, op) <- pending st =
@@ -151,17 +153,17 @@ normalKey st (Vty.KChar c) _
       emit (NOperate (bounded (k * count st)) op MLine)
   | Just op <- operatorOf c, isNothing (pending st) =
       (initialKeyState { pending = Just (count st, op) }, Nothing)
+  | Just _ <- pending st, c == 'i' || c == 'a' =
+      (st { awaiting = Just (textObjectMotion (if c == 'i' then InnerObject else AroundObject)), awaitingObject = True }, Nothing)
   -- Vim's one irregular pairing: @cw@ acts as @ce@, so that changing a
   -- word does not swallow the space after it and leave you typing two
   -- words joined together.
-  | Just mk <- targetOf c = (st { awaiting = Just mk }, Nothing)
+  | Just mk <- targetOf c = (st { awaiting = Just mk, awaitingObject = False }, Nothing)
   | c == 'r' = (st { awaitingChar = Just NReplace }, Nothing)
   | Just m <- motionOf c = complete st (count st) (if changingAWord st m then MWordEnd else m)
   -- A command key is not a motion, so it cannot complete a pending
   -- operator. Executing it anyway would silently drop the operator --
-  -- @ciw@ would enter insert mode and type "w" as text. Vim would be
-  -- waiting for a text object here; until those exist (see the pending
-  -- list) the honest answer is to abandon the sequence.
+  -- text-object prefixes have already been consumed above.
   | Just _ <- pending st, Just _ <- commandOf c = (initialKeyState, Nothing)
   | Just f <- commandOf c = emit (f (count st))
   | otherwise = (initialKeyState, Nothing)
@@ -253,6 +255,23 @@ targetOf 't' = Just (MTo False True)
 targetOf 'F' = Just (MTo True False)
 targetOf 'T' = Just (MTo True True)
 targetOf _   = Nothing
+
+textObjectMotion :: ObjectScope -> Char -> Motion
+textObjectMotion scope key = MTextObject (TextObject scope kind)
+  where
+    kind
+      | key == 'w' = WordObject
+      | key `elem` ("\"'`" :: String) = QuoteObject key
+      | key `elem` ("()[]{}<>" :: String) = DelimitedObject (opener key)
+      | otherwise = UnsupportedObject key
+    opener ')' = '('
+    opener ']' = '['
+    opener '}' = '{'
+    opener '>' = '<'
+    opener c = c
+
+validTextObjectKey :: Char -> Bool
+validTextObjectKey c = c == 'w' || c `elem` ("\"'`()[]{}<>" :: String)
 
 arrowOf :: Vty.Key -> Maybe Direction
 arrowOf Vty.KLeft  = Just DLeft
