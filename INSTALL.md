@@ -2,7 +2,7 @@
 
 ## 1. Toolchain
 
-Basilisk targets **GHC 9.4.7** and needs the ICU library.
+Basilisk supports **GHC 9.10 and newer** and needs the ICU library.
 
 **Debian / Ubuntu**
 ```sh
@@ -18,12 +18,12 @@ export PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig"
 
 **ghcup**, if you'd rather not use the distribution packages:
 ```sh
-ghcup install ghc 9.4.7 && ghcup set ghc 9.4.7
+ghcup install ghc 9.10 && ghcup set ghc 9.10
 ghcup install cabal
 # still install libicu-dev / icu4c from your package manager
 ```
 
-Check: `ghc --version` should say 9.4.7.
+Check: `ghc --version` should report version 9.10 or newer.
 
 ## 2. Build
 

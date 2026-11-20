@@ -15,7 +15,7 @@ See [INSTALL.md](INSTALL.md) for the full instructions and
 troubleshooting. The short version, on Debian or Ubuntu:
 
 ```sh
-sudo apt-get install -y ghc cabal-install libicu-dev   # GHC 9.4.7
+sudo apt-get install -y ghc cabal-install libicu-dev   # GHC 9.10 or newer
 cabal update
 cabal build
 cabal run Basilisk -- yourfile.hs

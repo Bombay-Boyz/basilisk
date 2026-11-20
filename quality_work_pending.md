@@ -28,7 +28,7 @@ Ran `./scripts/check.sh` at the audited commit. It completed with **ALL CHECKS P
 | Complexity benchmarks | No scaling regression detected |
 | Generated `Basilisk.md` consistency | In sync |
 
-The observed toolchain was **GHC 9.14.1**. The run does not establish compatibility with the documented GHC 9.4.7 target, macOS, or other Unix environments. CI is configured in `.github/workflows/ci.yml` to run the same check script on Ubuntu 24.04, but this local audit did not inspect a remote CI run.
+The observed toolchain was **GHC 9.14.1**. The run does not establish compatibility with GHC 9.10/9.12, macOS, or other Unix environments. CI is configured in `.github/workflows/ci.yml` to run the same check script on Ubuntu 24.04, but this local audit did not inspect a remote CI run.
 
 ## Findings and remediation plan
 
@@ -68,7 +68,7 @@ Severity: **P0** means release-blocking data loss/security risk; **P1** means a 
 
 **Severity:** P2
 **Confidence:** Confirmed documentation drift.
-**Evidence:** `INSTALL.md:5-26` says GHC 9.4.7 is the target and tested version. The audited build used GHC 9.14.1, and `Basilisk.cabal` contains version-dependent Fourmolu bounds. `INSTALL.md:75-77` lists 34 properties and 136 smoke examples, while the current run reports 39 and 201. `README.md:23-26` repeats the 9.4.7 installation assumption.
+**Evidence:** `INSTALL.md:5-26` previously stated a compiler baseline below the project's intended support range. The audited build used GHC 9.14.1, and `Basilisk.cabal` contains version-dependent Fourmolu bounds. `INSTALL.md:75-77` lists 34 properties and 136 smoke examples, while the current run reports 39 and 201. `README.md` repeated the outdated installation assumption.
 
 **Impact:** Contributors can select a toolchain that has not been verified and receive misleading expectations about test coverage.
 
