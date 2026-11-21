@@ -1,21 +1,20 @@
 # Basilisk forensic quality audit and pending work
 
 **Audit date:** 2026-11-21
-**Audited checkout baseline:** `main`, commit `f0fede5` (`Reject unknown command-line options`); this update reconciles toolchain instructions and verification evidence.
+**Audited checkout baseline:** `main`, commit `d11b470` (`Verify formatter semantic preservation`); this update reconciles formatter status and current verification evidence.
 **Scope:** repository contents, architecture, file safety, CLI behavior, build and verification controls, test evidence, and user-facing documentation. This is a source-level and local verification audit, not a security certification or a full interactive terminal acceptance test.
 
 ## Executive assessment
 
-Basilisk has a coherent pure-core/IO-shell design and substantial pure-state coverage. Recent milestones hardened external-change detection, added conservative live Haskell indentation, and enabled project/XDG Fourmolu configuration. The save path detects content and identity changes, serializes cooperating Basilisk writers, and has targeted tests for several replacement and sync-failure cases. PTY tests cover basic save/quit, formatter failure, resize, and terminal restoration.
+Basilisk has a coherent pure-core/IO-shell design and substantial pure-state coverage. Recent milestones hardened external-change detection, added conservative live Haskell indentation, enabled project/XDG Fourmolu configuration, validated literate layout, bounded formatter diagnostics, and added compiler-backed checks for formatting idempotence and a custom fixity. The save path detects content and identity changes, serializes cooperating Basilisk writers, and has targeted tests for several replacement and sync-failure cases. PTY tests cover basic save/quit, formatter failure, resize, and terminal restoration.
 
 The repository is **not yet at editor-grade completion**. Project and user XDG Fourmolu configuration are loaded on save, and the literate-Haskell fixture set now covers the identified Bird/LaTeX layout and malformed-marker cases. Cross-version formatter API coverage remains open. Other gaps include filesystem failure coverage beyond injected cases and validated compiler/platform support. The partial-function scan is lexical rather than a proof. POSIX rename still cannot close the race with unrelated writers that ignore Basilisk's advisory locks.
 
-This audit records the installation and verification claims checked in this toolchain-documentation milestone. The separate product roadmap is maintained in `seby_pending_work.md`.
+This audit was refreshed after the formatter reliability milestones through `d11b470`. The separate product roadmap is maintained in `seby_pending_work.md`.
 
 ## Verification evidence
 
-`./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3 after the CLI
-argument tests were added. It includes build, all four test suites, the
+`./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3 at `d11b470`. It includes build, all four test suites, the
 partial-function sweep, line-count ceiling, benchmarks, CLI/PTY checks and
 generated-document consistency. The completed GitHub Actions run for commit
 `b1837f2` also passed all four configured GHC jobs; the run is linked from
@@ -24,17 +23,17 @@ generated-document consistency. The completed GitHub Actions run for commit
 | Check | Result |
 |---|---:|
 | Build all components, tests and benchmarks | Passed; zero warnings in check-script build |
-| Haskell LOC ceiling (same lexical count as `scripts/check.sh`) | 2,440 / 3,000 |
+| Haskell LOC ceiling (same lexical count as `scripts/check.sh`) | 2,479 / 3,000 |
 | Hedgehog laws | 39 passed |
 | Smoke checks | 230 passed |
 | Exhaustive mode/command/document combinations | 629,640, zero exceptions |
-| Save-time formatter and file-write integration | Passed |
+| Save-time formatter, compiler-backed preservation, and file-write integration | Passed |
 | Complexity benchmarks | Passed |
 | PTY terminal regressions | Passed, including terminal attribute restoration |
 | Generated `Basilisk.md` consistency | Passed |
 | Full `scripts/check.sh` | **ALL CHECKS PASSED** |
 
-The observed local toolchain is **GHC 9.10.3 on macOS arm64**. The full local check passed on that combination. GitHub Actions run `44923039398` passed the configured Ubuntu 24.04 jobs for GHC 9.10, 9.12, 9.14 and `latest` at commit `b1837f2`, including the scoped `hpc` workaround.
+The observed local toolchain is **GHC 9.10.3 on macOS arm64**. The full local check passed on that combination at `d11b470`. GitHub Actions run `44923039398` passed the configured Ubuntu 24.04 jobs for GHC 9.10, 9.12, 9.14 and `latest` at commit `b1837f2`, including the scoped `hpc` workaround. That remote result predates the latest formatter test additions and is not evidence that `d11b470` passed the compiler matrix.
 
 ## Findings and remediation plan
 
@@ -78,7 +77,7 @@ Severity: **P0** means release-blocking data loss/security risk; **P1** means a 
 **Confidence:** Confirmed implementation boundaries; impact depends on user files and expected policy.
 **Status:** Fourmolu configuration discovery and error handling are implemented. `src/Basilisk/Loop.hs` uses Fourmolu's config search and YAML parser; project ancestor files take precedence over the XDG user config. Printer options, fixity overrides and re-exports are passed into the formatter. Tests cover nested project precedence, XDG fallback, a custom indentation option, malformed YAML, and refusal to write on config failure. Literate fixtures cover blank Bird code lines, CRLF and missing-final-newline input, mixed line endings, prose and marker-like text, multiple LaTeX code regions, empty `.lhs` files, and malformed/nested/unmatched LaTeX markers. Formatter and validation failures preserve existing bytes and prevent quit-after-save. An experiment with Fourmolu 0.17.0.0 confirmed its in-process API parses supplied source as ordinary Haskell without the literate preprocessor; the implementation therefore shields prose and restores the literate layout around formatting.
 **Compatibility note:** The implementation decodes Fourmolu's exposed `Ormolu.Config.FourmoluConfig` type. Fourmolu identifies its top-level `Ormolu` module as the stable API; the configured GHC/Fourmolu matrix must catch changes to this config API.
-**Remaining evidence:** `src/Basilisk/Loop.hs` still recognizes Bird files by lines starting with `>` and LaTeX files by code-block markers, then reconstructs prose with generated marker lines. Current fixtures cover marker-like and indented prose, blank code lines, mixed endings, missing final newline, parse/config failures, complete output, and undo state. Formatter diagnostics are normalized to one line, include the source path, and are capped at 512 detail characters. Cross-version validation remains dependent on the configured CI matrix; unusual legal layouts and the custom reconstruction strategy still merit review.
+**Remaining evidence:** `src/Basilisk/Loop.hs` still recognizes Bird files by lines starting with `>` and LaTeX files by code-block markers, then reconstructs prose with generated marker lines. Fixtures cover marker-like and indented prose, blank code lines, mixed endings, missing final newline, parse/config failures, complete output, and undo state. Formatter diagnostics are normalized to one line, include the source path, and are capped at 512 detail characters. A formatter fixture compiles and runs before and after formatting to check a right-associative custom operator and comments; repeated formatting is byte-idempotent and does not change the buffer version or undo result. Cross-version validation remains dependent on the configured CI matrix; unusual legal layouts and the custom reconstruction strategy still merit review.
 
 **Impact:** Fourmolu's in-process API behavior may change across supported versions, and unusual legal literate constructs outside the fixture matrix may still not round-trip as intended. Since formatting is automatic on save, policy surprises are particularly costly.
 
@@ -147,6 +146,6 @@ The feature roadmap in `seby_pending_work.md` and the limitations in `Basilisk.m
 
 ## Audit boundaries and next gate
 
-This report does not claim a complete formal audit of every key binding or every branch in the 2,440-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3; GitHub Actions run `44923039398` passed the configured GHC matrix. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
+This report does not claim a complete formal audit of every key binding or every branch in the 2,479-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed at `d11b470` on macOS arm64 with GHC 9.10.3; GitHub Actions run `44923039398` passed the configured GHC matrix at the earlier `b1837f2` baseline. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
 
 **Recommended next gate:** verify the Fourmolu config API across the configured compiler branches and continue checking unusual literate-Haskell constructs. QF-01 is closed and config lookup/error behavior has focused coverage. Continue QF-05's remaining filesystem and exceptional-terminal cases before release; the basic PTY harness and selected write-race/failure tests already exist.

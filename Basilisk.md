@@ -6937,8 +6937,8 @@ import System.Directory (createDirectory, doesFileExist, renameFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process (readProcessWithExitCode)
 import System.Exit (ExitCode (..))
+import System.Process (readProcessWithExitCode)
 import System.Posix.Files (accessTimeHiRes, getFileStatus, modificationTimeHiRes, setFileTimesHiRes)
 
 import Basilisk.Document qualified as Doc
