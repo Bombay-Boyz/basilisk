@@ -1048,24 +1048,32 @@ doc += f"""---
 
 Declared compiler compatibility starts at GHC 9.10. Cabal selects
 Fourmolu 0.17 for GHC 9.10, Fourmolu 0.18 or 0.19 for GHC 9.12, and
-Fourmolu 0.20 or newer on GHC 9.14 and newer. The latest completed local
-verification used macOS arm64 with GHC 9.10.3. CI is configured for Ubuntu
-24.04 with GHC 9.10, 9.12, 9.14 and `latest`; remote results are not recorded
-in this checkout.
+Fourmolu 0.20 or 0.21 on GHC 9.14 and newer, subject to the Cabal bounds.
+The latest completed local verification used macOS arm64 with GHC 9.10.3.
+CI is configured for Ubuntu 24.04 with GHC 9.10, 9.12, 9.14 and `latest`.
+All four jobs passed at commit `033b389` in
+[run 44921223059](https://github.com/Bombay-Boyz/basilisk/actions/runs/44921223059).
+The scoped `hpc` relaxation added after that run awaits a fresh matrix result.
 
 ```
 macOS arm64, GHC 9.10.3; dependency versions are selected by Cabal
 ```
 
-The CI workflow defines the compiler matrix; each configured job must pass
-before that compiler line can be described as verified.
+The package requires Cabal 3.8 or newer for the conditional project
+configuration. The CI workflow defines the tested compiler matrix; results
+above are tied to their specific commit and run.
 
 Reproduce with:
 
 ```sh
-sudo apt-get install -y ghc cabal-install libicu-dev
+sudo apt-get install -y cabal-install libicu-dev pkg-config python3
+ghcup install ghc 9.10 && ghcup set ghc 9.10
 cabal update && ./scripts/check.sh
 ```
+
+The project requires GHC 9.10 or newer and Cabal 3.8 or newer. Do not rely on
+the distribution's `ghc` package unless `ghc --version` meets that minimum;
+see `INSTALL.md` for system requirements and platform notes.
 
 `check.sh` is the actual reproduction method: the build, the
 partial-function sweep, the line-count ceiling, all four suites, the

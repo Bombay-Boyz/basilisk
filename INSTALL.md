@@ -2,28 +2,39 @@
 
 ## 1. Toolchain
 
-Basilisk supports **GHC 9.10 and newer** and needs the ICU library.
+Basilisk requires **GHC 9.10 or newer**, **Cabal 3.8 or newer**, and the ICU
+library. Compatibility on newer GHC releases depends on the dependency
+bounds and the compiler lines configured in CI.
 
-**Debian / Ubuntu**
+**Debian / Ubuntu** — install system tools and libraries:
 ```sh
 sudo apt-get update
-sudo apt-get install -y ghc cabal-install libicu-dev
+sudo apt-get install -y cabal-install libicu-dev pkg-config python3
 ```
 
-**macOS** (locally verified on arm64 with GHC 9.10.3; CI currently runs on Linux)
+Install GHC 9.10 or newer with GHCup as shown below. Check `ghc --version`;
+distribution packages can lag behind the minimum version this project needs.
+
+**macOS** (locally verified on arm64 with GHC 9.10.3; CI is configured for Linux)
 ```sh
-brew install ghc cabal-install icu4c pkg-config
+brew install icu4c pkg-config
 export PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig"
 ```
 
-**ghcup**, if you'd rather not use the distribution packages:
+**GHCup** (recommended for selecting the required compiler version):
 ```sh
 ghcup install ghc 9.10 && ghcup set ghc 9.10
 ghcup install cabal
 # still install libicu-dev / icu4c from your package manager
 ```
 
-Check: `ghc --version` should report version 9.10 or newer.
+The minimum declared compiler is GHC 9.10, matching the package's
+`base >= 4.20` bound. Use Cabal 3.8 or newer. CI is configured for Ubuntu
+24.04 with GHC 9.10, 9.12, 9.14 and `latest`. All four jobs passed in the
+[completed run for commit 033b389](https://github.com/Bombay-Boyz/basilisk/actions/runs/44921223059);
+the scoped `hpc` workaround change in this checkout awaits its own matrix
+run. The latest local full check passed on macOS arm64 with GHC 9.10.3. The
+editor uses Unix APIs and does not support Windows.
 
 ## 2. Build
 
@@ -75,10 +86,10 @@ Individually, if you want them:
 
 ```sh
 cabal test                      # all four suites
-cabal run Basilisk-laws         # Hedgehog property suite
-cabal run Basilisk-smoke        # worked editor examples
-cabal run Basilisk-exhaustive   # every (mode, command, document) shape
-cabal run Basilisk-formatter    # save-time Haskell formatting integration
+cabal test Basilisk-laws        # Hedgehog property suite
+cabal test Basilisk-smoke       # worked editor examples
+cabal test Basilisk-exhaustive  # every (mode, command, document) shape
+cabal test Basilisk-formatter   # save-time Haskell formatting integration
 cabal bench                     # scaling benchmarks
 ```
 

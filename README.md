@@ -11,11 +11,13 @@ and how.
 
 ## Build
 
-See [INSTALL.md](INSTALL.md) for the full instructions and
-troubleshooting. The short version, on Debian or Ubuntu:
+See [INSTALL.md](INSTALL.md) for the compiler and Cabal versions, system
+dependencies, and full installation instructions. On Debian or Ubuntu,
+install the system requirements and then select GHC 9.10 or newer with GHCup:
 
 ```sh
-sudo apt-get install -y ghc cabal-install libicu-dev   # GHC 9.10 or newer
+sudo apt-get install -y cabal-install libicu-dev pkg-config python3
+# install/select GHC 9.10 or newer with GHCup
 cabal update
 cabal build
 cabal run Basilisk -- yourfile.hs

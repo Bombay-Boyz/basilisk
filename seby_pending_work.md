@@ -2,7 +2,7 @@
 
 **Purpose:** the prioritized product and engineering roadmap for Basilisk/Seby.
 
-**Snapshot:** reviewed from `main` at `033b389` on 2026-11-21; this update adds explicit CLI option handling and executable-level tests. External-change fingerprints and cooperating-writer locks were added in `e396c9d`; conservative live Haskell indentation was added in `68bc901`; project/XDG Fourmolu config support was added in `033b389`. The full check, including CLI/PTY cases, passed locally on macOS arm64 with GHC 9.10.3. The smoke suite reports 230 checks and the exhaustive transition sweep exercises 629,640 combinations. The remote CI matrix remains unverified. CI is configured for Ubuntu 24.04 with GHC 9.10, 9.12, 9.14 and `latest`. Save-time Fourmolu formatting is implemented for `.hs` and `.lhs`; project and XDG `fourmolu.yaml` settings are loaded. Markdown and plain text are saved unchanged and do not get live indentation.
+**Snapshot:** reviewed from `main` at `f0fede5` on 2026-11-21; this update reconciles installation and verification claims. External-change fingerprints and cooperating-writer locks were added in `e396c9d`; conservative live Haskell indentation was added in `68bc901`; project/XDG Fourmolu config support was added in `033b389`; explicit CLI option handling was added in `f0fede5`. The full check, including CLI/PTY cases, passed locally on macOS arm64 with GHC 9.10.3. GitHub Actions run `44921223059` passed all four configured GHC jobs on Ubuntu 24.04 at `033b389`; the scoped hpc change in this update awaits a fresh matrix result. The smoke suite reports 230 checks and the exhaustive transition sweep exercises 629,640 combinations. Save-time Fourmolu formatting is implemented for `.hs` and `.lhs`; project and XDG `fourmolu.yaml` settings are loaded. Markdown and plain text are saved unchanged and do not get live indentation.
 
 This is a work plan, not a claim that the items below already exist. Mark an item done only after its acceptance criteria pass and the architecture handoff is updated.
 
@@ -28,11 +28,11 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ### P0.1 Verify the advertised compiler and dependency support
 
-**Status:** CI matrix configured; remote matrix results remain unverified in this audit. The full local `scripts/check.sh` passed on GHC 9.10.3/macOS arm64.
+**Status:** CI matrix configured and all four jobs passed on commit `033b389` (run `44921223059`). The full local `scripts/check.sh` passed on GHC 9.10.3/macOS arm64. A scoped `hpc` workaround change is pending validation on the next matrix run.
 
 - Build and run the full check script across every supported GHC release line starting at 9.10.
 - Verify both conditional Fourmolu dependency branches and the `Ormolu.Config.FourmoluConfig` API used for YAML loading; the top-level `Ormolu` module is the stable API.
-- Review the `allow-newer: hpc` workaround in `cabal.project`. Keep it only if the GHC 9.14 package metadata mismatch still requires it; scope it to the narrowest supported condition and document why.
+- The `allow-newer: ghc-lib-parser:hpc` workaround is scoped to GHC 9.14+ for the bundled hpc metadata mismatch; keep checking that branch on the compiler matrix.
 - The CI matrix is configured in `.github/workflows/ci.yml` for Ubuntu 24.04 and GHC 9.10, 9.12, 9.14 and `latest`. Confirm successful runs for each line and retain a clean package-cache job. The matrix invokes `scripts/check.sh` for build, test suites, benchmarks, the partial-function sweep, PTY tests, and generated-document consistency.
 - Make the declared support range match what CI actually verifies. Do not imply Windows support while the executable imports the Unix Vty backend.
 
