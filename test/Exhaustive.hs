@@ -51,7 +51,7 @@ actions =
         , NSave, NWriteQuit, NQuitDiscard, NEnterReplace] ] ]
   ++ [InInsert c | c <- [IInput "", IInput "z", IInput "\n", IInput "\769", IInput "\t", IInput "a\nb"
                         , IInput "ab\ncd", IInput "x"
-                        , IBackspace, IMove DUp, IMove DDown, IMove DLeft, IMove DRight, IEscape]]
+                        , IEnter, IBackspace, IMove DUp, IMove DDown, IMove DLeft, IMove DRight, IEscape]]
   ++ [InPrompt c | c <- [PInput "", PInput "w", PBackspace, PSubmit, PEscape]]
 
 main :: IO ()

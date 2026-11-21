@@ -287,7 +287,7 @@ insertKey k ms
   | Vty.MCtrl `elem` ms = Nothing
   | otherwise = fmap InInsert $ case k of
       Vty.KChar c -> Just (IInput (Text.singleton c))
-      Vty.KEnter  -> Just (IInput "\n")
+      Vty.KEnter  -> Just IEnter
       Vty.KBS     -> Just IBackspace
       Vty.KEsc    -> Just IEscape
       _           -> fmap IMove (arrowOf k)

@@ -125,6 +125,7 @@ genNormal = Gen.choice
 genInsert :: Gen InsertCmd
 genInsert = Gen.choice
   [ IInput <$> Gen.text (Range.linear 0 4) (Gen.frequency [(6, genChar), (1, pure '\n')])
+  , pure IEnter
   , pure IBackspace
   , IMove <$> Gen.element [DUp, DDown, DLeft, DRight]
   , pure IEscape

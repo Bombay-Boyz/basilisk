@@ -67,9 +67,9 @@ Counts prefix a command and multiply: `3dw`, `5j`, `2d3w`.
 
 ## What it does not do yet
 
-Haskell and Markdown lexical highlighting is available. No live auto-indent,
-parser-backed diagnostics or LSP. No visual mode, text objects, marks, or
-named registers. No macros. Multiple buffers exist as a data
+Haskell and Markdown lexical highlighting and Haskell live indentation are
+available. No parser-backed diagnostics or LSP, visual mode, text objects,
+marks, or named registers. No macros. Multiple buffers exist as a data
 split but nothing yet switches between them; no
 splits or config file. Unix only.
 

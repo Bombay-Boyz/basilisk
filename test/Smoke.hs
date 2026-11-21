@@ -167,6 +167,25 @@ stepChecks =
   , ("p pastes after the cursor", body (run [NPaste 1 True] dw) == "whello orld")
   , ("o opens a line below and enters insert", body (run [NEnterInsert 1 LineBelow] (editor "a")) == "a\n"
       && mode (run [NEnterInsert 1 LineBelow] (editor "a")) == Insert Dirty)
+  , ("Enter adds two spaces after a Haskell layout cue",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 10 (editor "main = do")) { mode = Insert Fresh }))) == "main = do\n  ")
+  , ("Enter keeps existing Haskell indentation",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 8 (editor "  x = do")) { mode = Insert Fresh }))) == "  x = do\n    ")
+  , ("Haskell cue text inside a string does not add indentation",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 10 (editor "x = \"do\"")) { mode = Insert Fresh }))) == "x = \"do\"\n")
+  , ("Haskell cue text inside a comment does not add indentation",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 12 (editor "x = 1 -- do")) { mode = Insert Fresh }))) == "x = 1 -- do\n")
+  , ("Enter does not infer indentation for plain text",
+      body (fst (step (InInsert IEnter) (onFile "notes.txt" (at 8 (editor "  - item")) { mode = Insert Fresh }))) == "  - item\n")
+  , ("Bird-style literate Haskell retains its marker and indent",
+      body (fst (step (InInsert IEnter) (onFile "Main.lhs" (at 11 (editor "> main = do")) { mode = Insert Fresh }))) == "> main = do\n>   ")
+  , ("Enter inside an empty pair creates an indented interior line",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 8 (editor "main = ()")) { mode = Insert Fresh }))) == "main = (\n  \n)")
+  , ("Backspace removes indentation to the previous two-space stop",
+      let indentedLine = fst (step (InInsert IEnter) (onFile "Main.hs" (at 9 (editor "main = do")) { mode = Insert Fresh }))
+      in body (fst (step (InInsert IBackspace) indentedLine)) == "main = do\n")
+  , ("a pasted newline does not trigger live indentation",
+      body (fst (step (InInsert (IInput "\n")) (onFile "Main.hs" (at 10 (editor "main = do")) { mode = Insert Fresh }))) == "main = do\n")
   , ("O opens a line above", body (run [NEnterInsert 1 LineAbove] (editor "a")) == "\na")
   , ("a may sit past the last character, Escape may not",
       Doc.cursorCol (document afterA) == Doc.Offset 1
@@ -497,6 +516,7 @@ decodeChecks =
   , ("i enters insert", keys Normal (chars "i") == [InNormal (NEnterInsert 1 Before)])
   , ("a colon opens the ex prompt", keys Normal (chars ":") == [InNormal (NEnterPrompt ExCommand)])
   , ("insert mode types text", keys (Insert Fresh) (chars "ab") == [InInsert (IInput "a"), InInsert (IInput "b")])
+  , ("Enter is a distinct insert action", snd (decode (Insert Fresh) initialKeyState (Vty.EvKey Vty.KEnter [])) == Just (InInsert IEnter))
   , ("the prompt accumulates its own buffer",
       keys (Prompt ExCommand "") (chars "wq") == [InPrompt (PInput "w"), InPrompt (PInput "q")])
   , ("text object prefixes remain pending for their object key",

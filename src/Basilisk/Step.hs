@@ -17,19 +17,31 @@ module Basilisk.Step
   , openPrompt
   ) where
 
-import Data.Bifunctor (first)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import System.FilePath (takeExtension)
 
 import Basilisk.Cursor (Cursor (..), syncColumn, unicode)
 import qualified Basilisk.Document as Doc
+import qualified Basilisk.Indent as Indent
 import Basilisk.Types
 
 type Step = (Editor, [Effect])
 
 step :: Action -> Editor -> Step
-step a = first (retract . remember a) . dispatch a
+step a e = (retract (record e'), effects)
   where
+    (e', effects) = dispatch a e
+    record result = case a of
+      InInsert IEnter -> result { typing = typing result <> enteredText }
+      InInsert IBackspace -> result { typing = Text.dropEnd deletedChars (typing result) }
+      _ -> remember a result
+    enteredText = case mode e of
+      Replace _ -> "\n"
+      _ -> enterText e
+    deletedChars = case mode e of
+      Replace _ -> 1
+      _ -> backspaceChars e
     dispatch (InNormal c) = normal c
     dispatch (InInsert c) = insertMode c
     dispatch (InPrompt c) = promptMode c
@@ -64,7 +76,8 @@ remember (InNormal c) e
     toMotion (NOperate _ _ m) = Just m
     toMotion _                = Nothing
 remember (InInsert (IInput t)) e = e { typing = typing e <> t }
-remember (InInsert IBackspace) e = e { typing = Text.dropEnd 1 (typing e) }
+remember (InInsert IEnter) e = e
+remember (InInsert IBackspace) e = e
 remember (InInsert IEscape)    e = e { lastEdit = fmap (fmap (const (typing e))) (lastEdit e) }
 remember (InInsert (IMove _))  e = e
 remember (InPrompt PSubmit) e = case mode e of
@@ -276,9 +289,12 @@ insertMode :: InsertCmd -> Editor -> Step
 insertMode (IInput t) e = pureT (case mode e of
   Replace _ -> overwriteAll t e
   _         -> typed (Doc.insert t) e)
+insertMode IEnter e = pureT (case mode e of
+  Replace _ -> overwriteAll "\n" e
+  _         -> typed (Doc.insert (enterText e)) e)
 insertMode IBackspace e = pureT (case mode e of
   Replace stack -> unwind stack e
-  _             -> typed (Doc.backspace unicode) e)
+  _             -> typed (if autoIndentAtCursor e then Indent.backspaceIndent else Doc.backspace unicode) e)
 insertMode (IMove d)  e = pureT (moveBy (Doc.reach unicode 1 (MChar d) (document e)) (restart e))
 -- | A counted insert (@3ifoo\<Esc\>@) repeats the whole session's typed
 -- text, not just the final keystroke -- so the repetition happens
@@ -318,6 +334,30 @@ restart e = case mode e of
   Replace _  -> e { mode = Replace [] }
   Normal     -> e
   Prompt {}  -> e
+
+enterText :: Editor -> Text
+enterText e = case path e of
+  Just file | takeExtension file `elem` [".hs", ".lhs"] ->
+    Indent.enterText (takeExtension file == ".lhs") (Doc.currentLine (document e)) (Doc.beforeCursor (document e))
+  _ -> "\n"
+
+backspaceChars :: Editor -> Int
+backspaceChars e
+  | autoIndentAtCursor e =
+      max 1 (Text.length before - maybe 0 (Text.length . Doc.beforeCursor) (Indent.backspaceIndent (document e)))
+  | otherwise = 1
+  where before = Doc.beforeCursor (document e)
+
+-- Smart Backspace applies only immediately after Enter created indentation.
+-- Ordinary spaces typed at the start of a line still delete one at a time.
+autoIndentAtCursor :: Editor -> Bool
+autoIndentAtCursor e = not (Text.null indentation)
+  && Text.all isIndentChar indentation
+  && indentation `Text.isSuffixOf` Doc.beforeCursor (document e)
+  && Text.isSuffixOf ("\n" <> indentation) (typing e)
+  where
+    (_, indentation) = Text.breakOnEnd "\n" (typing e)
+    isIndentChar c = c == ' ' || c == '\t'
 
 -- | @R@: overwrite one character of input at a time, each pushing what
 -- it overwrote onto the mode's own stack so backspace can restore it.

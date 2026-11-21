@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: ten modules, 2276 lines of code. The verification
+Status, in one line: ten modules, 2402 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -932,18 +932,19 @@ prototype, measured, before adoption.
 | `Basilisk.Document` | zipper, coordinates, the reach algebra | 756 | 1341 |
 | `Basilisk.Cursor` | the sticky column, ICU display width | 89 | 165 |
 | `Basilisk.Types` | modes, tagged commands, effects, editor | 248 | 422 |
-| `Basilisk.Step` | the pure transition function | 297 | 536 |
+| `Basilisk.Step` | the pure transition function | 332 | 576 |
 | `Basilisk.Decode` | vim's key grammar, as a Mealy machine | 199 | 303 |
 | `Basilisk.Render` | viewport, frame, status line | 82 | 130 |
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
+| `Basilisk.Indent` | Haskell live indentation | 91 | 117 |
 | `Basilisk.File` | open and write, encoding-safe | 305 | 425 |
 | `Basilisk.Loop` | the IO shell and save-time formatting | 162 | 195 |
 | `Main` | argument parsing | 47 | 55 |
-| **Total** | | **2276** | |
+| **Total** | | **2402** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **2276 lines against a 3,000 ceiling**, leaving 724
+specified — is **2402 lines against a 3,000 ceiling**, leaving 598
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -954,8 +955,8 @@ Tests, which do not count against the ceiling:
 | File | Purpose | Code | With comments |
 |---|---|---|---|
 | `test/Laws.hs` | the laws, as Hedgehog properties | 426 | 718 |
-| `test/Gen.hs` | Unicode-hostile generators | 135 | 186 |
-| `test/Smoke.hs` | worked examples, in vim's vocabulary | 507 | 577 |
+| `test/Gen.hs` | Unicode-hostile generators | 136 | 187 |
+| `test/Smoke.hs` | worked examples, in vim's vocabulary | 527 | 597 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
 | `test/Formatter.hs` | save-time Haskell formatter integration | 138 | 143 |
 
@@ -963,7 +964,7 @@ Tests, which do not count against the ceiling:
 
 Vimscript or Lua, a plugin framework, GUI/mouse interaction, a terminal
 emulator, session management, parser-backed diagnostics and LSP integration.
-Haskell save-time formatting is built in; live auto-indent while typing,
+Haskell save-time formatting and conservative live indentation are built in;
 comments and structural navigation remain future work. Markdown and plain
 text are not reformatted.
 Named registers, macros, visual mode, ex ranges and substitutions are
@@ -1019,6 +1020,7 @@ library
     Basilisk.Decode
     Basilisk.Render
     Basilisk.Syntax
+    Basilisk.Indent
     Basilisk.File
     Basilisk.Loop
   build-depends:
@@ -2805,7 +2807,7 @@ data NormalCmd
   | NSave
   deriving (Eq, Show, Generic, NFData)
 
-data InsertCmd = IInput !Text | IBackspace | IMove !Direction | IEscape
+data InsertCmd = IInput !Text | IEnter | IBackspace | IMove !Direction | IEscape
   deriving (Eq, Show, Generic, NFData)
 
 data PromptCmd = PInput !Text | PBackspace | PSubmit | PEscape
@@ -3065,19 +3067,31 @@ module Basilisk.Step
   , openPrompt
   ) where
 
-import Data.Bifunctor (first)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import System.FilePath (takeExtension)
 
 import Basilisk.Cursor (Cursor (..), syncColumn, unicode)
 import qualified Basilisk.Document as Doc
+import qualified Basilisk.Indent as Indent
 import Basilisk.Types
 
 type Step = (Editor, [Effect])
 
 step :: Action -> Editor -> Step
-step a = first (retract . remember a) . dispatch a
+step a e = (retract (record e'), effects)
   where
+    (e', effects) = dispatch a e
+    record result = case a of
+      InInsert IEnter -> result { typing = typing result <> enteredText }
+      InInsert IBackspace -> result { typing = Text.dropEnd deletedChars (typing result) }
+      _ -> remember a result
+    enteredText = case mode e of
+      Replace _ -> "\n"
+      _ -> enterText e
+    deletedChars = case mode e of
+      Replace _ -> 1
+      _ -> backspaceChars e
     dispatch (InNormal c) = normal c
     dispatch (InInsert c) = insertMode c
     dispatch (InPrompt c) = promptMode c
@@ -3112,7 +3126,8 @@ remember (InNormal c) e
     toMotion (NOperate _ _ m) = Just m
     toMotion _                = Nothing
 remember (InInsert (IInput t)) e = e { typing = typing e <> t }
-remember (InInsert IBackspace) e = e { typing = Text.dropEnd 1 (typing e) }
+remember (InInsert IEnter) e = e
+remember (InInsert IBackspace) e = e
 remember (InInsert IEscape)    e = e { lastEdit = fmap (fmap (const (typing e))) (lastEdit e) }
 remember (InInsert (IMove _))  e = e
 remember (InPrompt PSubmit) e = case mode e of
@@ -3324,9 +3339,12 @@ insertMode :: InsertCmd -> Editor -> Step
 insertMode (IInput t) e = pureT (case mode e of
   Replace _ -> overwriteAll t e
   _         -> typed (Doc.insert t) e)
+insertMode IEnter e = pureT (case mode e of
+  Replace _ -> overwriteAll "\n" e
+  _         -> typed (Doc.insert (enterText e)) e)
 insertMode IBackspace e = pureT (case mode e of
   Replace stack -> unwind stack e
-  _             -> typed (Doc.backspace unicode) e)
+  _             -> typed (if autoIndentAtCursor e then Indent.backspaceIndent else Doc.backspace unicode) e)
 insertMode (IMove d)  e = pureT (moveBy (Doc.reach unicode 1 (MChar d) (document e)) (restart e))
 -- | A counted insert (@3ifoo\<Esc\>@) repeats the whole session's typed
 -- text, not just the final keystroke -- so the repetition happens
@@ -3366,6 +3384,30 @@ restart e = case mode e of
   Replace _  -> e { mode = Replace [] }
   Normal     -> e
   Prompt {}  -> e
+
+enterText :: Editor -> Text
+enterText e = case path e of
+  Just file | takeExtension file `elem` [".hs", ".lhs"] ->
+    Indent.enterText (takeExtension file == ".lhs") (Doc.currentLine (document e)) (Doc.beforeCursor (document e))
+  _ -> "\n"
+
+backspaceChars :: Editor -> Int
+backspaceChars e
+  | autoIndentAtCursor e =
+      max 1 (Text.length before - maybe 0 (Text.length . Doc.beforeCursor) (Indent.backspaceIndent (document e)))
+  | otherwise = 1
+  where before = Doc.beforeCursor (document e)
+
+-- Smart Backspace applies only immediately after Enter created indentation.
+-- Ordinary spaces typed at the start of a line still delete one at a time.
+autoIndentAtCursor :: Editor -> Bool
+autoIndentAtCursor e = not (Text.null indentation)
+  && Text.all isIndentChar indentation
+  && indentation `Text.isSuffixOf` Doc.beforeCursor (document e)
+  && Text.isSuffixOf ("\n" <> indentation) (typing e)
+  where
+    (_, indentation) = Text.breakOnEnd "\n" (typing e)
+    isIndentChar c = c == ' ' || c == '\t'
 
 -- | @R@: overwrite one character of input at a time, each pushing what
 -- it overwrote onto the mode's own stack so backspace can restore it.
@@ -3876,7 +3918,7 @@ insertKey k ms
   | Vty.MCtrl `elem` ms = Nothing
   | otherwise = fmap InInsert $ case k of
       Vty.KChar c -> Just (IInput (Text.singleton c))
-      Vty.KEnter  -> Just (IInput "\n")
+      Vty.KEnter  -> Just IEnter
       Vty.KBS     -> Just IBackspace
       Vty.KEsc    -> Just IEscape
       _           -> fmap IMove (arrowOf k)
@@ -4137,6 +4179,128 @@ lineComment input = case Text.uncons (Text.drop 2 input) of
 
 symbol :: Char -> Bool
 symbol c = c `elem` (":!#$%&*+./<=>?@\\^|-~" :: String)
+```
+
+### `src/Basilisk/Indent.hs`
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | Small, conservative live indentation rules for Haskell source.
+-- Whole-file formatting remains the save path's responsibility.
+module Basilisk.Indent
+  ( enterText
+  , backspaceIndent
+  ) where
+
+import qualified Data.Text as Text
+import Data.Text (Text)
+
+import Basilisk.Cursor (displayColumn, unicode)
+import qualified Basilisk.Document as Doc
+
+-- | Text inserted for an Enter key. Literate Bird lines keep their marker;
+-- all indentation is spaces so the policy is stable across environments.
+enterText :: Bool -> Text -> Text -> Text
+enterText literate line before =
+  if emptyPair
+    then "\n" <> marked (childIndent <> "\n") <> marked baseIndent
+    else "\n" <> marked (baseIndent <> if opensLayout codeBefore then "  " else "")
+  where
+    bird = literate && ">" `Text.isPrefixOf` line
+    marker = if bird then "> " else ""
+    marked = (marker <>)
+    codeLine = if bird then stripBird line else line
+    codeBefore = if bird then stripBird before else before
+    rawAfter = Text.drop (Text.length before) line
+    codeAfter = if bird && ">" `Text.isPrefixOf` rawAfter then stripBird rawAfter else rawAfter
+    originalIndent = Text.takeWhile isIndentChar codeLine
+    baseIndent
+      | closesLayout codeLine = dedent originalIndent
+      | otherwise = originalIndent
+    childIndent = originalIndent <> "  "
+    emptyPair = maybe False (`Text.isPrefixOf` Text.stripStart codeAfter) (matchingClose (lastNonSpace codeBefore))
+
+stripBird :: Text -> Text
+stripBird text = case Text.stripPrefix ">" text of
+  Nothing -> text
+  Just rest -> maybe rest id (Text.stripPrefix " " rest)
+
+isIndentChar :: Char -> Bool
+isIndentChar c = c == ' ' || c == '\t'
+
+dedent :: Text -> Text
+dedent indent
+  | Text.isSuffixOf "\t" indent = Text.dropEnd 1 indent
+  | otherwise = Text.take (max 0 (Text.length indent - 2)) indent
+
+lastNonSpace :: Text -> Maybe Char
+lastNonSpace = fmap snd . Text.unsnoc . Text.stripEnd
+
+matchingClose :: Maybe Char -> Maybe Text
+matchingClose (Just '(') = Just ")"
+matchingClose (Just '[') = Just "]"
+matchingClose (Just '{') = Just "}"
+matchingClose _ = Nothing
+
+-- | Recognize only syntactic tails that open a Haskell layout context.
+-- Comments and quoted literals cannot trigger continuation indentation.
+opensLayout :: Text -> Bool
+opensLayout raw = any (`Text.isSuffixOf` code) symbols || any (endsWord code) keywords
+  where
+    code = Text.stripEnd (codeOnly raw)
+    symbols = ["\\case", "->", "<-", "=", "|", "(", "[", "{"]
+    keywords = ["do", "where", "let", "of", "then", "else"]
+    endsWord text token = token `Text.isSuffixOf` text && maybe True (not . isWordChar . snd) (Text.unsnoc (Text.dropEnd (Text.length token) text))
+
+closesLayout :: Text -> Bool
+closesLayout line = any starts ["in", "else", ")", "]", "}"]
+  where
+    body = Text.stripStart (codeOnly line)
+    starts token = token `Text.isPrefixOf` body && boundary (Text.drop (Text.length token) body)
+    boundary rest = maybe True (not . isWordChar . fst) (Text.uncons rest)
+
+isWordChar :: Char -> Bool
+isWordChar c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
+
+-- | Remove line comments, nested block comments, and quoted literals from
+-- one line before checking its final syntactic cue. Quoted literals are
+-- replaced by a marker so a preceding @=@ cannot be mistaken for a tail.
+codeOnly :: Text -> Text
+codeOnly = Text.pack . scan 0 Nothing . Text.unpack
+  where
+    scan :: Int -> Maybe Char -> String -> String
+    scan _ _ [] = []
+    scan depth quote input@(c : rest)
+      | depth > 0 = case input of
+          '{' : '-' : more -> scan (depth + 1) quote more
+          '-' : '}' : more -> scan (depth - 1) quote more
+          _ : more -> scan depth quote more
+      | Just q <- quote = case input of
+          '\\' : _ : more -> scan 0 (Just q) more
+          x : more | x == q -> 'x' : scan 0 Nothing more
+          _ : more -> scan 0 (Just q) more
+      | "--" `prefixOf` input = []
+      | "{-" `prefixOf` input = ' ' : scan 1 Nothing (drop 2 input)
+      | c == '"' || c == '\'' = 'x' : scan 0 (Just c) rest
+      | otherwise = c : scan 0 Nothing rest
+    prefixOf :: String -> String -> Bool
+    prefixOf prefix input = take (length prefix) input == prefix
+
+-- | Remove a chunk of leading indentation to the previous two-column
+-- boundary. At a non-indentation cursor, ordinary one-grapheme deletion
+-- remains in effect.
+backspaceIndent :: Doc.Document -> Maybe Doc.Document
+backspaceIndent document
+  | Text.null before || not (Text.all isIndentChar before) = Doc.backspace unicode document
+  | otherwise = removeTo target document
+  where
+    before = Doc.beforeCursor document
+    width = Doc.unColumn (displayColumn before)
+    target = ((width - 1) `div` 2) * 2
+    removeTo column current
+      | Doc.unColumn (displayColumn (Doc.beforeCursor current)) <= column = Just current
+      | otherwise = Doc.backspace unicode current >>= removeTo column
 ```
 
 ### `src/Basilisk/File.hs`
@@ -5928,6 +6092,7 @@ genNormal = Gen.choice
 genInsert :: Gen InsertCmd
 genInsert = Gen.choice
   [ IInput <$> Gen.text (Range.linear 0 4) (Gen.frequency [(6, genChar), (1, pure '\n')])
+  , pure IEnter
   , pure IBackspace
   , IMove <$> Gen.element [DUp, DDown, DLeft, DRight]
   , pure IEscape
@@ -6161,6 +6326,25 @@ stepChecks =
   , ("p pastes after the cursor", body (run [NPaste 1 True] dw) == "whello orld")
   , ("o opens a line below and enters insert", body (run [NEnterInsert 1 LineBelow] (editor "a")) == "a\n"
       && mode (run [NEnterInsert 1 LineBelow] (editor "a")) == Insert Dirty)
+  , ("Enter adds two spaces after a Haskell layout cue",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 10 (editor "main = do")) { mode = Insert Fresh }))) == "main = do\n  ")
+  , ("Enter keeps existing Haskell indentation",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 8 (editor "  x = do")) { mode = Insert Fresh }))) == "  x = do\n    ")
+  , ("Haskell cue text inside a string does not add indentation",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 10 (editor "x = \"do\"")) { mode = Insert Fresh }))) == "x = \"do\"\n")
+  , ("Haskell cue text inside a comment does not add indentation",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 12 (editor "x = 1 -- do")) { mode = Insert Fresh }))) == "x = 1 -- do\n")
+  , ("Enter does not infer indentation for plain text",
+      body (fst (step (InInsert IEnter) (onFile "notes.txt" (at 8 (editor "  - item")) { mode = Insert Fresh }))) == "  - item\n")
+  , ("Bird-style literate Haskell retains its marker and indent",
+      body (fst (step (InInsert IEnter) (onFile "Main.lhs" (at 11 (editor "> main = do")) { mode = Insert Fresh }))) == "> main = do\n>   ")
+  , ("Enter inside an empty pair creates an indented interior line",
+      body (fst (step (InInsert IEnter) (onFile "Main.hs" (at 8 (editor "main = ()")) { mode = Insert Fresh }))) == "main = (\n  \n)")
+  , ("Backspace removes indentation to the previous two-space stop",
+      let indentedLine = fst (step (InInsert IEnter) (onFile "Main.hs" (at 9 (editor "main = do")) { mode = Insert Fresh }))
+      in body (fst (step (InInsert IBackspace) indentedLine)) == "main = do\n")
+  , ("a pasted newline does not trigger live indentation",
+      body (fst (step (InInsert (IInput "\n")) (onFile "Main.hs" (at 10 (editor "main = do")) { mode = Insert Fresh }))) == "main = do\n")
   , ("O opens a line above", body (run [NEnterInsert 1 LineAbove] (editor "a")) == "\na")
   , ("a may sit past the last character, Escape may not",
       Doc.cursorCol (document afterA) == Doc.Offset 1
@@ -6491,6 +6675,7 @@ decodeChecks =
   , ("i enters insert", keys Normal (chars "i") == [InNormal (NEnterInsert 1 Before)])
   , ("a colon opens the ex prompt", keys Normal (chars ":") == [InNormal (NEnterPrompt ExCommand)])
   , ("insert mode types text", keys (Insert Fresh) (chars "ab") == [InInsert (IInput "a"), InInsert (IInput "b")])
+  , ("Enter is a distinct insert action", snd (decode (Insert Fresh) initialKeyState (Vty.EvKey Vty.KEnter [])) == Just (InInsert IEnter))
   , ("the prompt accumulates its own buffer",
       keys (Prompt ExCommand "") (chars "wq") == [InPrompt (PInput "w"), InPrompt (PInput "q")])
   , ("text object prefixes remain pending for their object key",
@@ -6627,7 +6812,7 @@ actions =
         , NSave, NWriteQuit, NQuitDiscard, NEnterReplace] ] ]
   ++ [InInsert c | c <- [IInput "", IInput "z", IInput "\n", IInput "\769", IInput "\t", IInput "a\nb"
                         , IInput "ab\ncd", IInput "x"
-                        , IBackspace, IMove DUp, IMove DDown, IMove DLeft, IMove DRight, IEscape]]
+                        , IEnter, IBackspace, IMove DUp, IMove DDown, IMove DLeft, IMove DRight, IEscape]]
   ++ [InPrompt c | c <- [PInput "", PInput "w", PBackspace, PSubmit, PEscape]]
 
 main :: IO ()
@@ -6835,8 +7020,8 @@ save from replacing undecodable source bytes with an empty buffer.
 
 The declared scope remains a single-buffer, Unix modal editor. Haskell
 formatting now runs automatically on save for `.hs` and `.lhs` files;
-Markdown and plain text are saved unchanged. Live auto-indent and
-parser-backed Haskell services remain unfinished work.
+Markdown and plain text are saved unchanged. Parser-backed Haskell services
+remain unfinished work.
 
 Nothing below is a stub or a "should type-check" claim; the container
 has Hackage access and every dependency is the real one.
@@ -7371,7 +7556,7 @@ pty -- produced exactly the expected text.
   make their individual separator assignment ambiguous.
 - **Syntax coloring is lexical and line-local.** Nested block comments
   that continue across rows are not carried into the visible-row lexer;
-  there is no parser, diagnostics, auto-indent or LSP yet.
+  there is no parser, diagnostics or LSP yet.
 - **`vty` is a hard dependency of `Basilisk-smoke`**, because the decoder
   tests use `Vty.Event`. The suite still needs no test framework, but the
   previous revision's claim that a smoke suite runs "on any machine with a

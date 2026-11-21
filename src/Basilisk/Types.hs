@@ -184,7 +184,7 @@ data NormalCmd
   | NSave
   deriving (Eq, Show, Generic, NFData)
 
-data InsertCmd = IInput !Text | IBackspace | IMove !Direction | IEscape
+data InsertCmd = IInput !Text | IEnter | IBackspace | IMove !Direction | IEscape
   deriving (Eq, Show, Generic, NFData)
 
 data PromptCmd = PInput !Text | PBackspace | PSubmit | PEscape

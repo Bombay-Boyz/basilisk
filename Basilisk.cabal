@@ -33,6 +33,7 @@ library
     Basilisk.Decode
     Basilisk.Render
     Basilisk.Syntax
+    Basilisk.Indent
     Basilisk.File
     Basilisk.Loop
   build-depends:

@@ -22,6 +22,7 @@ MODULES = [
     ('Basilisk.Decode',   'src/Basilisk/Decode.hs',   "vim's key grammar, as a Mealy machine"),
     ('Basilisk.Render',   'src/Basilisk/Render.hs',   'viewport, frame, status line'),
     ('Basilisk.Syntax',   'src/Basilisk/Syntax.hs',   'Haskell and Markdown lexical highlighting'),
+    ('Basilisk.Indent',   'src/Basilisk/Indent.hs',   'Haskell live indentation'),
     ('Basilisk.File',     'src/Basilisk/File.hs',     'open and write, encoding-safe'),
     ('Basilisk.Loop',     'src/Basilisk/Loop.hs',     'the IO shell and save-time formatting'),
     ('Main',              'app/Main.hs',              'argument parsing'),
@@ -1001,7 +1002,7 @@ Tests, which do not count against the ceiling:
 
 Vimscript or Lua, a plugin framework, GUI/mouse interaction, a terminal
 emulator, session management, parser-backed diagnostics and LSP integration.
-Haskell save-time formatting is built in; live auto-indent while typing,
+Haskell save-time formatting and conservative live indentation are built in;
 comments and structural navigation remain future work. Markdown and plain
 text are not reformatted.
 Named registers, macros, visual mode, ex ranges and substitutions are
@@ -1081,8 +1082,8 @@ save from replacing undecodable source bytes with an empty buffer.
 
 The declared scope remains a single-buffer, Unix modal editor. Haskell
 formatting now runs automatically on save for `.hs` and `.lhs` files;
-Markdown and plain text are saved unchanged. Live auto-indent and
-parser-backed Haskell services remain unfinished work.
+Markdown and plain text are saved unchanged. Parser-backed Haskell services
+remain unfinished work.
 
 Nothing below is a stub or a "should type-check" claim; the container
 has Hackage access and every dependency is the real one.
@@ -1616,7 +1617,7 @@ pty -- produced exactly the expected text.
   make their individual separator assignment ambiguous.
 - **Syntax coloring is lexical and line-local.** Nested block comments
   that continue across rows are not carried into the visible-row lexer;
-  there is no parser, diagnostics, auto-indent or LSP yet.
+  there is no parser, diagnostics or LSP yet.
 - **`vty` is a hard dependency of `Basilisk-smoke`**, because the decoder
   tests use `Vty.Event`. The suite still needs no test framework, but the
   previous revision's claim that a smoke suite runs "on any machine with a
