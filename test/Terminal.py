@@ -7,6 +7,7 @@ import os
 import pty
 import select
 import signal
+import stat
 import subprocess
 import struct
 import termios
@@ -220,6 +221,38 @@ class TerminalCase(unittest.TestCase):
             self.assertEqual(code, 0)
             with open(path, "rb") as source:
                 self.assertEqual(source.read(), b"working-original\n")
+            self.assertIn(b"written", output.lower())
+            self.assertEqual(original, restored)
+
+    def test_w_refuses_read_only_file_and_preserves_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "read-only.txt")
+            with open(path, "wb") as target:
+                target.write(b"original\n")
+            os.chmod(path, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+            output, code, (original, restored) = self.run_editor(
+                path, [b"iworking-", b"\x1b", b":w\r", b":q!\r"]
+            )
+            self.assertEqual(code, 0)
+            self.assertIn(b"read-only file", output.lower())
+            with open(path, "rb") as source:
+                self.assertEqual(source.read(), b"original\n")
+            self.assertEqual(original, restored)
+
+    def test_w_force_overwrites_read_only_file_and_preserves_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "read-only.txt")
+            with open(path, "wb") as target:
+                target.write(b"original\n")
+            read_only_mode = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
+            os.chmod(path, read_only_mode)
+            output, code, (original, restored) = self.run_editor(
+                path, [b"iworking-", b"\x1b", b":w!\r", b":q\r"]
+            )
+            self.assertEqual(code, 0)
+            with open(path, "rb") as source:
+                self.assertEqual(source.read(), b"working-original\n")
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), read_only_mode)
             self.assertIn(b"written", output.lower())
             self.assertEqual(original, restored)
 
