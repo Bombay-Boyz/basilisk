@@ -2,7 +2,7 @@
 
 **Purpose:** the prioritized product and engineering roadmap for Basilisk/Seby.
 
-**Snapshot:** roadmap last reviewed against the repository at commit `7810478` (`Format Haskell files automatically on save`); the compiler support statement was updated for the current GHC 9.10-and-newer policy. The built-in Fourmolu save path is implemented for `.hs` and `.lhs`; Markdown and plain text are saved unchanged. The project check script passed on GHC 9.14.1. The full supported compiler matrix is verified by CI.
+**Snapshot:** reviewed against `main` at commit `c96bd03` on 2026-11-21. External-change fingerprints and cooperating-writer locks were added in `e396c9d`; conservative live Haskell indentation was added in `68bc901`. On macOS arm64 with GHC 9.10.3, `cabal build all --enable-tests --enable-benchmarks` and all four Cabal test suites passed. The smoke suite reports 230 checks and the exhaustive transition sweep exercises 629,640 combinations. The full `scripts/check.sh` and remote CI matrix were not verified at this snapshot. CI is configured for Ubuntu 24.04 with GHC 9.10, 9.12, 9.14 and `latest`. Save-time Fourmolu formatting is implemented for `.hs` and `.lhs`; project Fourmolu configuration is not loaded. Markdown and plain text are saved unchanged and do not get live indentation.
 
 This is a work plan, not a claim that the items below already exist. Mark an item done only after its acceptance criteria pass and the architecture handoff is updated.
 
@@ -10,14 +10,14 @@ This is a work plan, not a claim that the items below already exist. Mark an ite
 
 Seby should make common editing tasks fast and predictable while protecting user data. Every feature should have an explicit behavior model, total edge-case handling, focused tests, and an end-to-end terminal check where terminal behavior is involved. Haskell support should use project settings and compiler semantics instead of approximating them with token heuristics.
 
-Keep the editor modal and Haskell-first. Do not add a plugin framework or require users to install a plugin or run a formatter command for ordinary save behavior. Prefer well-supported Haskell libraries as in-process dependencies. Keep IO at the shell boundary, keep semantic state out of the core `Editor`, and preserve the existing file-safety guarantees.
+Keep the editor modal and Haskell-first. Do not add a plugin framework or require users to install a plugin or run a formatter command for ordinary save behavior. Prefer well-supported Haskell libraries as in-process dependencies. Keep IO at the shell boundary, keep semantic state out of the core `Editor`, and preserve the existing file-safety guarantees. Where behavior depends on project or compiler semantics, prefer those sources over token heuristics; document the limits of intentionally conservative heuristic features.
 
 ## Priority summary
 
 | Priority | Milestone | Outcome |
 |---|---|---|
-| P0 | Release confidence | Supported compiler matrix, reproducible builds, terminal regression coverage, and stable formatter behavior |
-| P1 | Editing completeness | Text objects, visual selection, marks/registers, reliable command-line editing, and live indentation |
+| P0 | Release confidence | Verified compiler matrix, reproducible builds, terminal regression coverage, and stable formatter behavior |
+| P1 | Editing completeness | Text objects, visual selection, marks/registers, reliable command-line editing, and live-indentation follow-up |
 | P2 | Haskell intelligence | Incremental parsing, useful diagnostics, and version-safe Haskell Language Server integration |
 | P3 | Workspace productivity | Multiple buffers, project navigation, user settings, and recoverable sessions |
 | P4 | Scale and distribution | Responsive large-file behavior, portability decisions, packaging, and release operations |
@@ -28,25 +28,29 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ### P0.1 Verify the advertised compiler and dependency support
 
+**Status:** CI matrix configured; full matrix results remain unverified in this audit. A local GHC 9.10.3/macOS build and Cabal test run passed.
+
 - Build and run the full check script across every supported GHC release line starting at 9.10.
 - Verify both conditional Fourmolu dependency branches and their public `Ormolu` API usage.
 - Review the `allow-newer: hpc` workaround in `cabal.project`. Keep it only if the GHC 9.14 package metadata mismatch still requires it; scope it to the narrowest supported condition and document why.
-- Add a CI matrix for supported compiler lines, with a clean package cache at least in one job. Make the job run build, test suites, benchmarks, the partial-function sweep, and the generated-document check.
+- The CI matrix is configured in `.github/workflows/ci.yml` for Ubuntu 24.04 and GHC 9.10, 9.12, 9.14 and `latest`. Confirm successful runs for each line and retain a clean package-cache job. The matrix invokes `scripts/check.sh` for build, test suites, benchmarks, the partial-function sweep, PTY tests, and generated-document consistency.
 - Make the declared support range match what CI actually verifies. Do not imply Windows support while the executable imports the Unix Vty backend.
 
 **Acceptance:** a fresh checkout builds without undocumented local packages or commands on every advertised compiler; CI exercises the same checks maintainers rely on locally.
 
 ### P0.2 Harden save-time formatting as a data-integrity boundary
 
+**Status:** Core behavior and several failure cases are tested; the formatter policy and fixture matrix remain open. `test/Formatter.hs` covers Cabal extensions, basic Bird and LaTeX literate files, Markdown passthrough, parse failure, post-format undo, stale fingerprints, path replacement, a pre-commit external edit, and post-rename sync failure.
+
 - Test saves through `:w`, `:w!`, `:wq`, and `ZZ`, including success, parse failure, stale-file refusal, read-only files, and write failure.
 - Verify that formatter failure never changes disk contents, never marks the buffer clean, and never quits after `:wq` or `ZZ`.
 - Verify that a successful format updates the in-memory document, preserves the final-newline choice and line-ending policy, keeps the cursor on a sensible nearby location, creates one undoable change, and makes the resulting buffer clean only after the write succeeds.
-- Exercise `.hs`, bird-style `.lhs`, and LaTeX-style `.lhs` files with prose, comments, language pragmas, CPP, and malformed input. Preserve literate prose byte-for-byte where feasible; explicitly reject unsupported constructs without writing.
+- Expand `.hs`, Bird `.lhs`, and LaTeX `.lhs` fixtures to cover prose, comments, language pragmas, CPP, blank/indented rows, multiple code regions, marker-like source text, mixed line endings, and malformed input. Preserve literate prose byte-for-byte where feasible; explicitly reject unsupported constructs without writing.
 - Honor Cabal component language extensions and dependencies. Decide whether `fourmolu.yaml` is an intentionally unsupported project setting or should be loaded through a stable public API. Do not silently claim compatibility with settings the formatter ignores.
 - Improve formatter diagnostics shown in the status line: retain source path and location, avoid dumping unbounded multi-line exception text into the single-line UI, and keep enough detail available for review.
 - Test formatter idempotence and semantic preservation against representative project fixtures, including custom fixities and comments around imports and declarations.
 
-**Acceptance:** every failure mode leaves the original file intact and the user can understand why saving failed. Repeated saves of an already formatted file produce no content or history change.
+**Acceptance:** failures before replacement leave the original file intact; failures after replacement report that the new file was committed and state any durability warning accurately. The user can understand why saving failed or completed with a warning. Repeated saves of an already formatted file produce no content or history change.
 
 ### P0.3 Build a terminal-driven regression harness — complete
 
@@ -96,13 +100,15 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ### P1.5 Implement live indentation and comment helpers
 
-- Keep live indentation separate from whole-file formatting on save. Determine indentation from the preceding syntactic context, not only leading whitespace.
-- Use the active file language: Haskell indentation for `.hs`/`.lhs`, conservative Markdown behavior, and no automatic rewriting for plain text.
-- Define Enter behavior in insert mode, Backspace across indentation, paste behavior, tabs versus spaces, blank lines, closing delimiters, guards, `do`/`where`/`let`, and literate Haskell prefixes.
-- Add comment-line insertion/continuation only when it can respect Haskell line, nested block, and literate syntax.
-- Share a `shiftwidth`/indent policy with indentation operators so `>>` and live indentation do not disagree.
+**Status:** Conservative Haskell Enter indentation is implemented in `68bc901`. It applies to `.hs` and Bird-style `.lhs`, uses two-space continuation after common layout cues, preserves Bird markers, indents empty delimiter pairs, and leaves Markdown/plain text and pasted newlines unchanged. It is lexical and fixed-width; it does not implement comment continuation or configurable indentation.
 
-**Acceptance:** indentation is predictable on incomplete code, never corrupts text on paste or Backspace, respects configured width, and has a dedicated behavior table with tests.
+- Keep live indentation separate from whole-file formatting on save. Improve context detection beyond the current conservative lexical cues where reliable syntax information is available.
+- Decide whether Markdown should receive any live behavior; current behavior intentionally leaves Markdown and plain text unchanged.
+- Extend the behavior table for tabs versus spaces, blank lines, guards, closers, `do`/`where`/`let`, and Bird prefixes. Current Enter, smart Backspace, empty-pair and paste behavior have focused smoke checks.
+- Add comment-line insertion/continuation only when it can respect Haskell line, nested block, and literate syntax.
+- Add a user setting for indentation width/style before claiming configurable indentation, then decide whether indentation operators should share it.
+
+**Acceptance:** the supported fixed-width behavior is documented and predictable on incomplete Haskell; it never corrupts text on paste or Backspace. Configurable width/style and comment continuation remain separate acceptance work.
 
 ### P1.6 Improve search and navigation
 
@@ -243,12 +249,12 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ## Suggested first sequence
 
-1. Verify every supported GHC release line from 9.10 onward in CI; settle the Hackage `hpc` bound workaround.
-2. Finish formatter failure, literate-source, idempotence, cursor, newline, Cabal, and configuration policy tests.
-3. Implement Visual mode and reuse the same span semantics.
-4. Add live indentation after the settings and Haskell syntax context needed to make it reliable.
-5. Build versioned semantic snapshots, diagnostics, then HLS integration.
-6. Reassess the 3,000-line ceiling and workspace/session scope before buffer management or LSP growth.
+1. Define the formatter configuration policy and precedence, then expand literate-Haskell golden fixtures and failure-state assertions.
+2. Capture the configured GHC CI matrix results; check the `hpc` bound workaround and reconcile compiler/platform claims in README, INSTALL and `Basilisk.md`.
+3. Fill the remaining deterministic filesystem failure and exceptional-terminal cases under P0.2/P0.4.
+4. Implement Visual mode and reuse the existing span semantics.
+5. Add configurable indentation and comment continuation only after the Haskell behavior and settings model are clear; retain the current conservative Enter rules as the baseline.
+6. Build versioned semantic snapshots, diagnostics, then HLS integration. Reassess the 3,000-line ceiling and workspace/session scope before buffer management or LSP growth.
 
 ## Completion standard
 
