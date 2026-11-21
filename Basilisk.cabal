@@ -94,7 +94,7 @@ test-suite Basilisk-formatter
   type:               exitcode-stdio-1.0
   hs-source-dirs:     test
   main-is:            Formatter.hs
-  build-depends:      base, bytestring, text, directory, filepath, temporary, unix, Basilisk
+  build-depends:      base, bytestring, text, directory, filepath, temporary, unix, Basilisk, process
 
 -- Totality sweep: every (mode, command, document) shape, forced to
 -- normal form, checked only for freedom from exceptions.

@@ -961,7 +961,7 @@ Tests, which do not count against the ceiling:
 | `test/Gen.hs` | Unicode-hostile generators | 136 | 187 |
 | `test/Smoke.hs` | worked examples, in vim's vocabulary | 527 | 597 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
-| `test/Formatter.hs` | save-time Haskell formatter integration | 319 | 324 |
+| `test/Formatter.hs` | save-time Haskell formatter integration | 343 | 348 |
 
 ## 2.14 Deliberately out of scope for v1
 
@@ -1086,7 +1086,7 @@ test-suite Basilisk-formatter
   type:               exitcode-stdio-1.0
   hs-source-dirs:     test
   main-is:            Formatter.hs
-  build-depends:      base, bytestring, text, directory, filepath, temporary, unix, Basilisk
+  build-depends:      base, bytestring, text, directory, filepath, temporary, unix, Basilisk, process
 
 -- Totality sweep: every (mode, command, document) shape, forced to
 -- normal form, checked only for freedom from exceptions.
@@ -6937,6 +6937,8 @@ import System.Directory (createDirectory, doesFileExist, renameFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Process (readProcessWithExitCode)
+import System.Exit (ExitCode (..))
 import System.Posix.Files (accessTimeHiRes, getFileStatus, modificationTimeHiRes, setFileTimesHiRes)
 
 import Basilisk.Document qualified as Doc
@@ -6950,6 +6952,8 @@ main = do
   withSystemTempDirectory "basilisk-formatter" $ \dir -> do
     let hs = dir </> "Main.hs"
         semanticHs = dir </> "Semantic.hs"
+        semanticBeforeDir = dir </> "semantic-before"
+        semanticAfterDir = dir </> "semantic-after"
         lhs = dir </> "Literate.lhs"
         latex = dir </> "Latex.lhs"
         birdEdge = dir </> "BirdEdge.lhs"
@@ -6991,17 +6995,37 @@ main = do
           && "answer=42" `Text.isInfixOf` Doc.toText (document (fst (step (InNormal (NUndo 1)) formatted)))
       )
     let semanticSource =
-          "module Semantic where\n\n-- imported names used by this module\nimport Data.Maybe (fromMaybe)\n\ninfixr 5 <+>\n\ndata Expr = A | B | C\n\n-- This operator is intentionally right associative.\n(<+>) :: Expr -> Expr -> Expr\n_ <+> right = right\n\nchain = A <+> B <+> C"
-    (semanticFormatted, _) <- write semanticHs semanticSource
+          "module Main where\n\n-- import comment stays with the import\nimport Data.Maybe (fromMaybe)\n\ninfixr 5 <+>\n\ndata Expr = A | B | C | Join Expr Expr deriving Show\n\n-- This operator is intentionally right associative.\n(<+>) :: Expr -> Expr -> Expr\n(<+>) = Join\n\nchain = A <+> B <+> C\n\nmain = print (fromMaybe chain (Just chain))"
+    Text.writeFile semanticHs semanticSource
+    createDirectory semanticBeforeDir
+    (compileBefore, _, compileBeforeError) <-
+      readProcessWithExitCode "ghc" ["-v0", "-outputdir", semanticBeforeDir, "-o", semanticBeforeDir </> "semantic", semanticHs] ""
+    check ("the semantic fixture compiles before formatting: " <> compileBeforeError) (compileBefore == ExitSuccess)
+    (runBefore, semanticOutputBefore, runBeforeError) <-
+      readProcessWithExitCode (semanticBeforeDir </> "semantic") [] ""
+    check ("the semantic fixture runs before formatting: " <> runBeforeError) (runBefore == ExitSuccess)
+    semanticEditor <- File.openFile semanticHs
+    (semanticFormatted, _) <-
+      perform (semanticEditor, False)
+        (WriteFile semanticHs (Doc.toText (document semanticEditor)) False False)
     semanticBytes <- Text.readFile semanticHs
     check
       "formatting preserves a custom fixity declaration and surrounding comments"
       ( status semanticFormatted == Just "written"
-          && "-- imported names used by this module" `Text.isInfixOf` semanticBytes
+          && "-- import comment stays with the import" `Text.isInfixOf` semanticBytes
           && "-- This operator is intentionally right associative." `Text.isInfixOf` semanticBytes
           && "infixr 5 <+>" `Text.isInfixOf` semanticBytes
           && "chain = A <+> B <+> C" `Text.isInfixOf` semanticBytes
       )
+    createDirectory semanticAfterDir
+    (compileAfter, _, compileAfterError) <-
+      readProcessWithExitCode "ghc" ["-v0", "-outputdir", semanticAfterDir, "-o", semanticAfterDir </> "semantic", semanticHs] ""
+    check ("the formatted semantic fixture compiles: " <> compileAfterError) (compileAfter == ExitSuccess)
+    (runAfter, semanticOutputAfter, runAfterError) <-
+      readProcessWithExitCode (semanticAfterDir </> "semantic") [] ""
+    check ("the formatted semantic fixture runs: " <> runAfterError) (runAfter == ExitSuccess)
+    check "formatting preserves the fixture's evaluated custom-fixity result" (semanticOutputBefore == semanticOutputAfter)
+    check "the fixture exercises right associativity" (semanticOutputBefore == "Join A (Join B C)\n")
     let undoBeforeRepeat = fst (step (InNormal (NUndo 1)) semanticFormatted)
     (repeatedFormat, _) <-
       perform
