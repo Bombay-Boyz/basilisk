@@ -7131,17 +7131,16 @@ Fourmolu 0.17 for GHC 9.10, Fourmolu 0.18 or 0.19 for GHC 9.12, and
 Fourmolu 0.20 or 0.21 on GHC 9.14 and newer, subject to the Cabal bounds.
 The latest completed local verification used macOS arm64 with GHC 9.10.3.
 CI is configured for Ubuntu 24.04 with GHC 9.10, 9.12, 9.14 and `latest`.
-All four jobs passed at commit `033b389` in
-[run 44921223059](https://github.com/Bombay-Boyz/basilisk/actions/runs/44921223059).
-The scoped `hpc` relaxation added after that run awaits a fresh matrix result.
+All four jobs, including the scoped `ghc-lib-parser:hpc` relaxation, passed at
+commit `b1837f2` in
+[run 44923039398](https://github.com/Bombay-Boyz/basilisk/actions/runs/44923039398).
 
 ```
 macOS arm64, GHC 9.10.3; dependency versions are selected by Cabal
 ```
 
 The package requires Cabal 3.8 or newer for the conditional project
-configuration. The CI workflow defines the tested compiler matrix; results
-above are tied to their specific commit and run.
+configuration. Results above are tied to their specific commit and run.
 
 Reproduce with:
 

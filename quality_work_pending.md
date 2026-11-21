@@ -18,7 +18,7 @@ This audit records the installation and verification claims checked in this tool
 argument tests were added. It includes build, all four test suites, the
 partial-function sweep, line-count ceiling, benchmarks, CLI/PTY checks and
 generated-document consistency. The completed GitHub Actions run for commit
-`033b389` also passed all four configured GHC jobs; the run is linked from
+`b1837f2` also passed all four configured GHC jobs; the run is linked from
 `INSTALL.md`.
 
 | Check | Result |
@@ -34,7 +34,7 @@ generated-document consistency. The completed GitHub Actions run for commit
 | Generated `Basilisk.md` consistency | Passed |
 | Full `scripts/check.sh` | **ALL CHECKS PASSED** |
 
-The observed local toolchain is **GHC 9.10.3 on macOS arm64**. The full local check passed on that combination. GitHub Actions run `44921223059` passed the configured Ubuntu 24.04 jobs for GHC 9.10, 9.12, 9.14 and `latest` at commit `033b389`. The `hpc` scoping change in this checkout awaits a fresh matrix run.
+The observed local toolchain is **GHC 9.10.3 on macOS arm64**. The full local check passed on that combination. GitHub Actions run `44923039398` passed the configured Ubuntu 24.04 jobs for GHC 9.10, 9.12, 9.14 and `latest` at commit `b1837f2`, including the scoped `hpc` workaround.
 
 ## Findings and remediation plan
 
@@ -63,14 +63,14 @@ Severity: **P0** means release-blocking data loss/security risk; **P1** means a 
 
 **Severity:** P2
 **Confidence:** Confirmed against package bounds, the checked-in CI workflow, local checks, and a completed remote CI run.
-**Status:** README, INSTALL and the generated handoff now distinguish the GHC 9.10 minimum from compiler lines selected by CI and the exact local verification. Ubuntu instructions no longer install an unspecified distro GHC; they use GHCup to meet the compiler floor. Test-suite commands use `cabal test`. The `allow-newer: ghc-lib-parser:hpc` workaround is scoped to that package and GHC 9.14+, matching the comment describing the bundled hpc metadata issue.
-**Evidence:** Local GHC 9.10.3/macOS arm64 `./scripts/check.sh` passes; with the scoped hpc relaxation, the local dependency solve succeeds. GitHub Actions run `44921223059` passed GHC 9.10, 9.12, 9.14 and `latest` on Ubuntu 24.04 at commit `033b389`. This run predates the hpc scoping change, so the next CI run must validate that final project-file change.
+**Status:** README, INSTALL and the generated handoff distinguish the GHC 9.10 minimum from compiler lines selected by CI and the exact local verification. Ubuntu instructions use GHCup to meet the compiler floor. Test-suite commands use `cabal test`. The `allow-newer: ghc-lib-parser:hpc` workaround is scoped to that package and GHC 9.14+, matching the bundled hpc metadata issue.
+**Evidence:** Local GHC 9.10.3/macOS arm64 `./scripts/check.sh` passes, and the scoped hpc configuration resolves locally. GitHub Actions run `44923039398` passed GHC 9.10, 9.12, 9.14 and `latest` on Ubuntu 24.04 at commit `b1837f2`.
 
 **Impact:** Contributors can select a toolchain that has not been verified and receive misleading expectations about test coverage.
 
 **Work:** Keep the scoped hpc workaround and compiler matrix under review as GHC/Fourmolu bounds change. Record new matrix outcomes with their commit and run link; do not claim an unobserved result.
 
-**Acceptance:** Met for the current support record; final validation of the scoped hpc change is pending the CI run triggered by this milestone.
+**Acceptance:** Met for the current compiler/platform support record and installation instructions. Recheck the matrix as compiler and dependency bounds change.
 
 ### QF-04 — Formatter configuration is supported; literate-Haskell compatibility remains under-tested
 
@@ -114,7 +114,7 @@ Severity: **P0** means release-blocking data loss/security risk; **P1** means a 
 
 **Severity:** P1
 **Confidence:** Confirmed gap between platform-specific code and observed validation.
-**Evidence:** `src/Basilisk/Loop.hs` imports `Graphics.Vty.Platform.Unix.mkVty`; `src/Basilisk/File.hs` uses POSIX file descriptors and `fileSynchronise`. CI is configured for Ubuntu 24.04 and four GHC selectors. A local macOS arm64 GHC 9.10.3 full `scripts/check.sh` run passed; GitHub Actions run `44921223059` passed all four configured compiler jobs at commit `033b389`.
+**Evidence:** `src/Basilisk/Loop.hs` imports `Graphics.Vty.Platform.Unix.mkVty`; `src/Basilisk/File.hs` uses POSIX file descriptors and `fileSynchronise`. CI targets Ubuntu 24.04 and four GHC selectors. A local macOS arm64 GHC 9.10.3 full `scripts/check.sh` run passed; GitHub Actions run `44923039398` passed all four configured compiler jobs at commit `b1837f2`.
 
 **Impact:** Compiler API, dependency, terminal, or filesystem differences can break a release on an advertised or assumed platform.
 
@@ -147,6 +147,6 @@ The feature roadmap in `seby_pending_work.md` and the limitations in `Basilisk.m
 
 ## Audit boundaries and next gate
 
-This report does not claim a complete formal audit of every key binding or every branch in the 2,440-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3. Remote CI matrix results are not confirmed. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
+This report does not claim a complete formal audit of every key binding or every branch in the 2,440-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3; GitHub Actions run `44923039398` passed the configured GHC matrix. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
 
 **Recommended next gate:** complete QF-04's remaining literate-Haskell fixture cases and verify the Fourmolu config API across the configured compiler branches. QF-01 is closed and config lookup/error behavior now has focused coverage. Continue QF-05's remaining filesystem and exceptional-terminal cases before release; the basic PTY harness and selected write-race/failure tests already exist.

@@ -2,7 +2,7 @@
 
 **Purpose:** the prioritized product and engineering roadmap for Basilisk/Seby.
 
-**Snapshot:** reviewed from `main` at `f0fede5` on 2026-11-21; this update reconciles installation and verification claims. External-change fingerprints and cooperating-writer locks were added in `e396c9d`; conservative live Haskell indentation was added in `68bc901`; project/XDG Fourmolu config support was added in `033b389`; explicit CLI option handling was added in `f0fede5`. The full check, including CLI/PTY cases, passed locally on macOS arm64 with GHC 9.10.3. GitHub Actions run `44921223059` passed all four configured GHC jobs on Ubuntu 24.04 at `033b389`; the scoped hpc change in this update awaits a fresh matrix result. The smoke suite reports 230 checks and the exhaustive transition sweep exercises 629,640 combinations. Save-time Fourmolu formatting is implemented for `.hs` and `.lhs`; project and XDG `fourmolu.yaml` settings are loaded. Markdown and plain text are saved unchanged and do not get live indentation.
+**Snapshot:** reviewed from `main` at `b1837f2` on 2026-11-21; this update reconciles installation and verification claims. External-change fingerprints and cooperating-writer locks were added in `e396c9d`; conservative live Haskell indentation was added in `68bc901`; project/XDG Fourmolu config support was added in `033b389`; explicit CLI option handling was added in `f0fede5`. The full check, including CLI/PTY cases, passed locally on macOS arm64 with GHC 9.10.3. GitHub Actions run `44923039398` passed all four configured GHC jobs on Ubuntu 24.04 at `b1837f2`. The smoke suite reports 230 checks and the exhaustive transition sweep exercises 629,640 combinations. Save-time Fourmolu formatting is implemented for `.hs` and `.lhs`; project and XDG `fourmolu.yaml` settings are loaded. Markdown and plain text are saved unchanged and do not get live indentation.
 
 This is a work plan, not a claim that the items below already exist. Mark an item done only after its acceptance criteria pass and the architecture handoff is updated.
 
@@ -28,12 +28,12 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ### P0.1 Verify the advertised compiler and dependency support
 
-**Status:** CI matrix configured and all four jobs passed on commit `033b389` (run `44921223059`). The full local `scripts/check.sh` passed on GHC 9.10.3/macOS arm64. A scoped `hpc` workaround change is pending validation on the next matrix run.
+**Status:** CI matrix configured and all four jobs passed on commit `b1837f2` (run `44923039398`). The full local `scripts/check.sh` passed on GHC 9.10.3/macOS arm64.
 
-- Build and run the full check script across every supported GHC release line starting at 9.10.
-- Verify both conditional Fourmolu dependency branches and the `Ormolu.Config.FourmoluConfig` API used for YAML loading; the top-level `Ormolu` module is the stable API.
-- The `allow-newer: ghc-lib-parser:hpc` workaround is scoped to GHC 9.14+ for the bundled hpc metadata mismatch; keep checking that branch on the compiler matrix.
-- The CI matrix is configured in `.github/workflows/ci.yml` for Ubuntu 24.04 and GHC 9.10, 9.12, 9.14 and `latest`. Confirm successful runs for each line and retain a clean package-cache job. The matrix invokes `scripts/check.sh` for build, test suites, benchmarks, the partial-function sweep, PTY tests, and generated-document consistency.
+- The full check script passes across the configured GHC 9.10, 9.12, 9.14 and `latest` jobs on Ubuntu 24.04; rerun the matrix as supported compiler/dependency bounds change.
+- The conditional Fourmolu dependency branches and `Ormolu.Config.FourmoluConfig` API used for YAML loading pass in that matrix; the top-level `Ormolu` module remains Fourmolu's stable API.
+- The `allow-newer: ghc-lib-parser:hpc` workaround is limited to GHC 9.14+ for the bundled hpc metadata mismatch and is covered by the passing matrix.
+- `.github/workflows/ci.yml` invokes `scripts/check.sh` for build, test suites, benchmarks, the partial-function sweep, PTY tests, and generated-document consistency.
 - Make the declared support range match what CI actually verifies. Do not imply Windows support while the executable imports the Unix Vty backend.
 
 **Acceptance:** a fresh checkout builds without undocumented local packages or commands on every advertised compiler; CI exercises the same checks maintainers rely on locally.
@@ -250,7 +250,7 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 ## Suggested first sequence
 
 1. Continue the literate-Haskell golden fixture matrix with malformed-layout and formatter API compatibility cases; current tests cover config precedence, parse/config failure safety, Bird and LaTeX regions, mixed line endings, missing final newline, empty files, and undo behavior. Verify project/XDG config behavior across supported Fourmolu versions.
-2. Capture the configured GHC CI matrix results; check the `hpc` bound workaround and reconcile compiler/platform claims in README, INSTALL and `Basilisk.md`.
+2. Keep the configured GHC CI matrix green as compiler versions advance; reconcile compiler/platform claims in README, INSTALL and `Basilisk.md` when bounds change.
 3. Fill the remaining deterministic filesystem failure and exceptional-terminal cases under P0.2/P0.4.
 4. Implement Visual mode and reuse the existing span semantics.
 5. Add configurable indentation and comment continuation only after the Haskell behavior and settings model are clear; retain the current conservative Enter rules as the baseline.

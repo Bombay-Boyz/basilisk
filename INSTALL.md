@@ -31,10 +31,9 @@ ghcup install cabal
 The minimum declared compiler is GHC 9.10, matching the package's
 `base >= 4.20` bound. Use Cabal 3.8 or newer. CI is configured for Ubuntu
 24.04 with GHC 9.10, 9.12, 9.14 and `latest`. All four jobs passed in the
-[completed run for commit 033b389](https://github.com/Bombay-Boyz/basilisk/actions/runs/44921223059);
-the scoped `hpc` workaround change in this checkout awaits its own matrix
-run. The latest local full check passed on macOS arm64 with GHC 9.10.3. The
-editor uses Unix APIs and does not support Windows.
+[completed run for commit b1837f2](https://github.com/Bombay-Boyz/basilisk/actions/runs/44923039398).
+The latest local full check passed on macOS arm64 with GHC 9.10.3. The editor
+uses Unix APIs and does not support Windows.
 
 ## 2. Build
 
