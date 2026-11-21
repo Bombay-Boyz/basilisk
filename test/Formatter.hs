@@ -30,6 +30,9 @@ main = do
         latexRegions = dir </> "LatexRegions.lhs"
         emptyLiterate = dir </> "Empty.lhs"
         brokenLiterate = dir </> "BrokenLiterate.lhs"
+        brokenLatex = dir </> "BrokenLatex.lhs"
+        nestedLatex = dir </> "NestedLatex.lhs"
+        malformedLatex = dir </> "MalformedLatex.lhs"
         mixedLiterate = dir </> "MixedEol.lhs"
         markdown = dir </> "notes.md"
         broken = dir </> "Broken.hs"
@@ -142,14 +145,61 @@ main = do
     (emptyWritten, _) <- perform (emptyEditor, False) (WriteFile emptyLiterate (Doc.toText (document emptyEditor)) False False)
     emptyBytes <- Text.readFile emptyLiterate
     check "an empty literate file remains empty after save" (status emptyWritten == Just "written" && Text.null emptyBytes)
-    (badLiterate, badLiterateQuit) <- writeQuit brokenLiterate "> module BrokenLiterate where\n> value =\n"
-    badLiterateExists <- doesFileExist brokenLiterate
+    let brokenLiterateSource = "> module BrokenLiterate where\n> value =\n"
+    Text.writeFile brokenLiterate brokenLiterateSource
+    brokenLiterateEditor <- File.openFile brokenLiterate
+    (badLiterate, badLiterateQuit) <-
+      perform (brokenLiterateEditor, False)
+        (WriteFile brokenLiterate (Doc.toText (document brokenLiterateEditor)) False True)
+    savedBrokenLiterate <- Text.readFile brokenLiterate
     check
-      "a parse failure in Bird code leaves the file absent and the buffer unsaved"
-      ( not badLiterateExists
+      "a parse failure in Bird code preserves the original file and does not quit"
+      ( savedBrokenLiterate == brokenLiterateSource
           && not badLiterateQuit
-          && Doc.toText (document badLiterate) == "> module BrokenLiterate where\n> value =\n"
+          && Doc.toText (document badLiterate) == Text.dropEnd 1 brokenLiterateSource
           && maybe False (Text.isPrefixOf "format failed:") (status badLiterate)
+      )
+    let brokenLatexSource = "LaTeX prose.\n\\begin{code}\nmodule BrokenLatex where\nanswer=1"
+    Text.writeFile brokenLatex brokenLatexSource
+    brokenLatexEditor <- File.openFile brokenLatex
+    (badLatex, badLatexQuit) <-
+      perform (brokenLatexEditor, False)
+        (WriteFile brokenLatex (Doc.toText (document brokenLatexEditor)) False True)
+    savedBrokenLatex <- Text.readFile brokenLatex
+    check
+      "an unterminated LaTeX code environment preserves the original file and does not quit"
+      ( savedBrokenLatex == brokenLatexSource
+          && not badLatexQuit
+          && Doc.toText (document badLatex) == brokenLatexSource
+          && maybe False (\message -> "unterminated" `Text.isInfixOf` message) (status badLatex)
+      )
+    let nestedLatexSource = "\\begin{code}\n\\begin{code}\n\\end{code}\n\\end{code}"
+    (nested, nestedQuit) <- writeQuit nestedLatex nestedLatexSource
+    nestedExists <- doesFileExist nestedLatex
+    check
+      "nested LaTeX code environments are rejected without writing or quitting"
+      ( not nestedExists
+          && not nestedQuit
+          && maybe False (\message -> "nested" `Text.isInfixOf` message) (status nested)
+      )
+    let orphanLatexPath = dir </> "OrphanLatexEnd.lhs"
+        orphanLatexSource = "prose\n\\end{code}"
+    (orphanLatex, orphanLatexQuit) <- writeQuit orphanLatexPath orphanLatexSource
+    orphanLatexExists <- doesFileExist orphanLatexPath
+    check
+      "an unmatched LaTeX end marker is rejected without writing or quitting"
+      ( not orphanLatexExists
+          && not orphanLatexQuit
+          && maybe False (\message -> "without matching" `Text.isInfixOf` message) (status orphanLatex)
+      )
+    let malformedLatexSource = "\\begin{code} trailing text\n\\end{code}"
+    (malformed, malformedQuit) <- writeQuit malformedLatex malformedLatexSource
+    malformedExists <- doesFileExist malformedLatex
+    check
+      "LaTeX code markers with trailing text are rejected"
+      ( not malformedExists
+          && not malformedQuit
+          && maybe False (\message -> "own unindented line" `Text.isInfixOf` message) (status malformed)
       )
     (plain, _) <- write markdown "#title\ntext  with   spaces"
     savedMarkdown <- Text.readFile markdown

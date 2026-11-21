@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: 11 modules, 2440 lines of code. The verification
+Status, in one line: 11 modules, 2472 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -941,13 +941,13 @@ prototype, measured, before adoption.
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
 | `Basilisk.Indent` | Haskell live indentation | 91 | 117 |
 | `Basilisk.File` | open and write, encoding-safe | 305 | 425 |
-| `Basilisk.Loop` | the IO shell and save-time formatting | 181 | 218 |
+| `Basilisk.Loop` | the IO shell and save-time formatting | 213 | 255 |
 | `Main` | argument parsing | 66 | 76 |
-| **Total** | | **2440** | |
+| **Total** | | **2472** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **2440 lines against a 3,000 ceiling**, leaving 560
+specified — is **2472 lines against a 3,000 ceiling**, leaving 528
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -961,7 +961,7 @@ Tests, which do not count against the ceiling:
 | `test/Gen.hs` | Unicode-hostile generators | 136 | 187 |
 | `test/Smoke.hs` | worked examples, in vim's vocabulary | 527 | 597 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
-| `test/Formatter.hs` | save-time Haskell formatter integration | 235 | 240 |
+| `test/Formatter.hs` | save-time Haskell formatter integration | 285 | 290 |
 
 ## 2.14 Deliberately out of scope for v1
 
@@ -4876,10 +4876,14 @@ formatHaskell sourcePath source = do
   result <-
     ( tryJust synchronous $ do
         config <- configFor sourcePath
+        -- Fourmolu's in-process API passes plain module text to GHC's parser
+        -- without the literate preprocessor, so .lhs prose is shielded with
+        -- unique marker comments and restored after formatting the code.
         output <- case takeExtension sourcePath of
           ".lhs" -> case literateSource source of
-            Nothing -> pure source
-            Just (plain, markers, bird) ->
+            Left problem -> ioError (userError (Text.unpack problem))
+            Right Nothing -> pure source
+            Right (Just (plain, markers, bird)) ->
               rebuildLiterate markers bird <$> ormolu config "<literate>.hs" plain
           _ -> ormolu config sourcePath source
         evaluate (force output)
@@ -4919,23 +4923,25 @@ loadFourmoluConfig sourcePath =
         ("failed to load " <> configPath <> ":\n" <> Yaml.prettyPrintParseException problem))
       Right config -> pure (Just config)
 
-literateSource :: Text -> Maybe (Text, Map.Map Text Text, Bool)
+literateSource :: Text -> Either Text (Maybe (Text, Map.Map Text Text, Bool))
 literateSource source
-  | latex = Just (Text.intercalate "\n" plainRows, replacements, False)
-  | bird = Just (Text.intercalate "\n" plainRows, replacements, True)
-  | otherwise = Nothing
+  | latex = do
+      validateLatex rows
+      pure (Just (Text.intercalate "\n" plainRows, replacements, False))
+  | bird = Right (Just (Text.intercalate "\n" plainRows, replacements, True))
+  | otherwise = Right Nothing
  where
   rows = Text.lines source
-  latex = any ("\\begin{code}" `Text.isPrefixOf`) rows
+  latex = any isLatexMarker rows
   bird = any (">" `Text.isPrefixOf`) rows
   prefix = markerPrefix source (0 :: Int)
   (plainRows, replacements) =
     let (_, tagged) = mapAccumL classify (False, 0 :: Int) rows
      in (map fst tagged, Map.fromList (concatMap snd tagged))
   classify (inside, index) line
-    | latex && "\\begin{code}" `Text.isPrefixOf` line =
+    | latex && isBeginCode line =
         ((True, index + 1), marked index line)
-    | latex && "\\end{code}" `Text.isPrefixOf` line =
+    | latex && isEndCode line =
         ((False, index + 1), marked index line)
     | latex && inside = ((inside, index), (line, []))
     | latex = ((inside, index + 1), marked index line)
@@ -4950,6 +4956,36 @@ literateSource source
   markerPrefix input index =
     let candidate = "-- BASILISK_INTERNAL_LITERATE_" <> Text.pack (show index) <> "_"
      in if candidate `Text.isInfixOf` input then markerPrefix input (index + 1) else candidate
+  isBeginCode line = Text.stripStart line == line && Text.strip line == "\\begin{code}"
+  isEndCode line = Text.stripStart line == line && Text.strip line == "\\end{code}"
+  isLatexMarker line =
+    "\\begin{code}" `Text.isPrefixOf` Text.stripStart line
+      || "\\end{code}" `Text.isPrefixOf` Text.stripStart line
+
+validateLatex :: [Text] -> Either Text ()
+validateLatex = go (1 :: Int) False
+ where
+  go line inside rows = case rows of
+    []
+      | inside -> Left "unterminated \\begin{code} block at end of literate Haskell file"
+      | otherwise -> Right ()
+    current : rest
+      | isMarkerLike current && not (isMarker current) ->
+          Left ("LaTeX code marker must occupy its own unindented line (line " <> tshow line <> ")")
+      | isBeginCode current && inside ->
+          Left ("nested \\begin{code} block at line " <> tshow line)
+      | isBeginCode current -> go (line + 1) True rest
+      | isEndCode current && not inside ->
+          Left ("\\end{code} without matching \\begin{code} at line " <> tshow line)
+      | isEndCode current -> go (line + 1) False rest
+      | otherwise -> go (line + 1) inside rest
+  isBeginCode line = Text.stripStart line == line && Text.strip line == "\\begin{code}"
+  isEndCode line = Text.stripStart line == line && Text.strip line == "\\end{code}"
+  isMarkerLike line =
+    "\\begin{code}" `Text.isPrefixOf` Text.stripStart line
+      || "\\end{code}" `Text.isPrefixOf` Text.stripStart line
+  isMarker line = isBeginCode line || isEndCode line
+  tshow = Text.pack . show
 
 rebuildLiterate :: Map.Map Text Text -> Bool -> Text -> Text
 rebuildLiterate markers bird = Text.intercalate "\n" . snd . mapAccumL restore False . Text.lines
@@ -4960,6 +4996,7 @@ rebuildLiterate markers bird = Text.intercalate "\n" . snd . mapAccumL restore F
       | "\\end{code}" `Text.isPrefixOf` original -> (False, original)
       | otherwise -> (inside, original)
     Nothing -> (inside, if bird then (if Text.null line then ">" else "> " <> line) else line)
+
 ```
 
 ### `app/Main.hs`
@@ -6912,6 +6949,9 @@ main = do
         latexRegions = dir </> "LatexRegions.lhs"
         emptyLiterate = dir </> "Empty.lhs"
         brokenLiterate = dir </> "BrokenLiterate.lhs"
+        brokenLatex = dir </> "BrokenLatex.lhs"
+        nestedLatex = dir </> "NestedLatex.lhs"
+        malformedLatex = dir </> "MalformedLatex.lhs"
         mixedLiterate = dir </> "MixedEol.lhs"
         markdown = dir </> "notes.md"
         broken = dir </> "Broken.hs"
@@ -7024,14 +7064,61 @@ main = do
     (emptyWritten, _) <- perform (emptyEditor, False) (WriteFile emptyLiterate (Doc.toText (document emptyEditor)) False False)
     emptyBytes <- Text.readFile emptyLiterate
     check "an empty literate file remains empty after save" (status emptyWritten == Just "written" && Text.null emptyBytes)
-    (badLiterate, badLiterateQuit) <- writeQuit brokenLiterate "> module BrokenLiterate where\n> value =\n"
-    badLiterateExists <- doesFileExist brokenLiterate
+    let brokenLiterateSource = "> module BrokenLiterate where\n> value =\n"
+    Text.writeFile brokenLiterate brokenLiterateSource
+    brokenLiterateEditor <- File.openFile brokenLiterate
+    (badLiterate, badLiterateQuit) <-
+      perform (brokenLiterateEditor, False)
+        (WriteFile brokenLiterate (Doc.toText (document brokenLiterateEditor)) False True)
+    savedBrokenLiterate <- Text.readFile brokenLiterate
     check
-      "a parse failure in Bird code leaves the file absent and the buffer unsaved"
-      ( not badLiterateExists
+      "a parse failure in Bird code preserves the original file and does not quit"
+      ( savedBrokenLiterate == brokenLiterateSource
           && not badLiterateQuit
-          && Doc.toText (document badLiterate) == "> module BrokenLiterate where\n> value =\n"
+          && Doc.toText (document badLiterate) == Text.dropEnd 1 brokenLiterateSource
           && maybe False (Text.isPrefixOf "format failed:") (status badLiterate)
+      )
+    let brokenLatexSource = "LaTeX prose.\n\\begin{code}\nmodule BrokenLatex where\nanswer=1"
+    Text.writeFile brokenLatex brokenLatexSource
+    brokenLatexEditor <- File.openFile brokenLatex
+    (badLatex, badLatexQuit) <-
+      perform (brokenLatexEditor, False)
+        (WriteFile brokenLatex (Doc.toText (document brokenLatexEditor)) False True)
+    savedBrokenLatex <- Text.readFile brokenLatex
+    check
+      "an unterminated LaTeX code environment preserves the original file and does not quit"
+      ( savedBrokenLatex == brokenLatexSource
+          && not badLatexQuit
+          && Doc.toText (document badLatex) == brokenLatexSource
+          && maybe False (\message -> "unterminated" `Text.isInfixOf` message) (status badLatex)
+      )
+    let nestedLatexSource = "\\begin{code}\n\\begin{code}\n\\end{code}\n\\end{code}"
+    (nested, nestedQuit) <- writeQuit nestedLatex nestedLatexSource
+    nestedExists <- doesFileExist nestedLatex
+    check
+      "nested LaTeX code environments are rejected without writing or quitting"
+      ( not nestedExists
+          && not nestedQuit
+          && maybe False (\message -> "nested" `Text.isInfixOf` message) (status nested)
+      )
+    let orphanLatexPath = dir </> "OrphanLatexEnd.lhs"
+        orphanLatexSource = "prose\n\\end{code}"
+    (orphanLatex, orphanLatexQuit) <- writeQuit orphanLatexPath orphanLatexSource
+    orphanLatexExists <- doesFileExist orphanLatexPath
+    check
+      "an unmatched LaTeX end marker is rejected without writing or quitting"
+      ( not orphanLatexExists
+          && not orphanLatexQuit
+          && maybe False (\message -> "without matching" `Text.isInfixOf` message) (status orphanLatex)
+      )
+    let malformedLatexSource = "\\begin{code} trailing text\n\\end{code}"
+    (malformed, malformedQuit) <- writeQuit malformedLatex malformedLatexSource
+    malformedExists <- doesFileExist malformedLatex
+    check
+      "LaTeX code markers with trailing text are rejected"
+      ( not malformedExists
+          && not malformedQuit
+          && maybe False (\message -> "own unindented line" `Text.isInfixOf` message) (status malformed)
       )
     (plain, _) <- write markdown "#title\ntext  with   spaces"
     savedMarkdown <- Text.readFile markdown

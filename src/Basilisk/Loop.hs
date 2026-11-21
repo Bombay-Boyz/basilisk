@@ -132,10 +132,14 @@ formatHaskell sourcePath source = do
   result <-
     ( tryJust synchronous $ do
         config <- configFor sourcePath
+        -- Fourmolu's in-process API passes plain module text to GHC's parser
+        -- without the literate preprocessor, so .lhs prose is shielded with
+        -- unique marker comments and restored after formatting the code.
         output <- case takeExtension sourcePath of
           ".lhs" -> case literateSource source of
-            Nothing -> pure source
-            Just (plain, markers, bird) ->
+            Left problem -> ioError (userError (Text.unpack problem))
+            Right Nothing -> pure source
+            Right (Just (plain, markers, bird)) ->
               rebuildLiterate markers bird <$> ormolu config "<literate>.hs" plain
           _ -> ormolu config sourcePath source
         evaluate (force output)
@@ -175,23 +179,25 @@ loadFourmoluConfig sourcePath =
         ("failed to load " <> configPath <> ":\n" <> Yaml.prettyPrintParseException problem))
       Right config -> pure (Just config)
 
-literateSource :: Text -> Maybe (Text, Map.Map Text Text, Bool)
+literateSource :: Text -> Either Text (Maybe (Text, Map.Map Text Text, Bool))
 literateSource source
-  | latex = Just (Text.intercalate "\n" plainRows, replacements, False)
-  | bird = Just (Text.intercalate "\n" plainRows, replacements, True)
-  | otherwise = Nothing
+  | latex = do
+      validateLatex rows
+      pure (Just (Text.intercalate "\n" plainRows, replacements, False))
+  | bird = Right (Just (Text.intercalate "\n" plainRows, replacements, True))
+  | otherwise = Right Nothing
  where
   rows = Text.lines source
-  latex = any ("\\begin{code}" `Text.isPrefixOf`) rows
+  latex = any isLatexMarker rows
   bird = any (">" `Text.isPrefixOf`) rows
   prefix = markerPrefix source (0 :: Int)
   (plainRows, replacements) =
     let (_, tagged) = mapAccumL classify (False, 0 :: Int) rows
      in (map fst tagged, Map.fromList (concatMap snd tagged))
   classify (inside, index) line
-    | latex && "\\begin{code}" `Text.isPrefixOf` line =
+    | latex && isBeginCode line =
         ((True, index + 1), marked index line)
-    | latex && "\\end{code}" `Text.isPrefixOf` line =
+    | latex && isEndCode line =
         ((False, index + 1), marked index line)
     | latex && inside = ((inside, index), (line, []))
     | latex = ((inside, index + 1), marked index line)
@@ -206,6 +212,36 @@ literateSource source
   markerPrefix input index =
     let candidate = "-- BASILISK_INTERNAL_LITERATE_" <> Text.pack (show index) <> "_"
      in if candidate `Text.isInfixOf` input then markerPrefix input (index + 1) else candidate
+  isBeginCode line = Text.stripStart line == line && Text.strip line == "\\begin{code}"
+  isEndCode line = Text.stripStart line == line && Text.strip line == "\\end{code}"
+  isLatexMarker line =
+    "\\begin{code}" `Text.isPrefixOf` Text.stripStart line
+      || "\\end{code}" `Text.isPrefixOf` Text.stripStart line
+
+validateLatex :: [Text] -> Either Text ()
+validateLatex = go (1 :: Int) False
+ where
+  go line inside rows = case rows of
+    []
+      | inside -> Left "unterminated \\begin{code} block at end of literate Haskell file"
+      | otherwise -> Right ()
+    current : rest
+      | isMarkerLike current && not (isMarker current) ->
+          Left ("LaTeX code marker must occupy its own unindented line (line " <> tshow line <> ")")
+      | isBeginCode current && inside ->
+          Left ("nested \\begin{code} block at line " <> tshow line)
+      | isBeginCode current -> go (line + 1) True rest
+      | isEndCode current && not inside ->
+          Left ("\\end{code} without matching \\begin{code} at line " <> tshow line)
+      | isEndCode current -> go (line + 1) False rest
+      | otherwise -> go (line + 1) inside rest
+  isBeginCode line = Text.stripStart line == line && Text.strip line == "\\begin{code}"
+  isEndCode line = Text.stripStart line == line && Text.strip line == "\\end{code}"
+  isMarkerLike line =
+    "\\begin{code}" `Text.isPrefixOf` Text.stripStart line
+      || "\\end{code}" `Text.isPrefixOf` Text.stripStart line
+  isMarker line = isBeginCode line || isEndCode line
+  tshow = Text.pack . show
 
 rebuildLiterate :: Map.Map Text Text -> Bool -> Text -> Text
 rebuildLiterate markers bird = Text.intercalate "\n" . snd . mapAccumL restore False . Text.lines

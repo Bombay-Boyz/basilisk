@@ -8,7 +8,7 @@
 
 Basilisk has a coherent pure-core/IO-shell design and substantial pure-state coverage. Recent milestones hardened external-change detection, added conservative live Haskell indentation, and enabled project/XDG Fourmolu configuration. The save path detects content and identity changes, serializes cooperating Basilisk writers, and has targeted tests for several replacement and sync-failure cases. PTY tests cover basic save/quit, formatter failure, resize, and terminal restoration.
 
-The repository is **not yet at editor-grade completion**. Project and user XDG Fourmolu configuration are loaded on save, but literate-Haskell fixtures and cross-version formatter API coverage remain limited. Other gaps include filesystem failure coverage beyond injected cases and validated compiler/platform support. The partial-function scan is lexical rather than a proof. POSIX rename still cannot close the race with unrelated writers that ignore Basilisk's advisory locks.
+The repository is **not yet at editor-grade completion**. Project and user XDG Fourmolu configuration are loaded on save, and the literate-Haskell fixture set now covers the identified Bird/LaTeX layout and malformed-marker cases. Cross-version formatter API coverage remains open. Other gaps include filesystem failure coverage beyond injected cases and validated compiler/platform support. The partial-function scan is lexical rather than a proof. POSIX rename still cannot close the race with unrelated writers that ignore Basilisk's advisory locks.
 
 This audit records the installation and verification claims checked in this toolchain-documentation milestone. The separate product roadmap is maintained in `seby_pending_work.md`.
 
@@ -72,19 +72,19 @@ Severity: **P0** means release-blocking data loss/security risk; **P1** means a 
 
 **Acceptance:** Met for the current compiler/platform support record and installation instructions. Recheck the matrix as compiler and dependency bounds change.
 
-### QF-04 — Formatter configuration is supported; literate-Haskell compatibility remains under-tested
+### QF-04 — Formatter configuration is supported; literate-Haskell layout is reconstructed and validated
 
 **Severity:** P1
 **Confidence:** Confirmed implementation boundaries; impact depends on user files and expected policy.
-**Status:** Fourmolu configuration discovery and error handling are implemented. `src/Basilisk/Loop.hs` uses Fourmolu's config search and YAML parser; project ancestor files take precedence over the XDG user config. Printer options, fixity overrides and re-exports are passed into the formatter. Tests cover nested project precedence, XDG fallback, a custom indentation option, malformed YAML, and refusal to write on config failure. Literate fixtures now include blank Bird code lines, CRLF and missing-final-newline input, multiple LaTeX code regions with intervening prose, and an empty `.lhs` file. A regression that changed bare Bird markers from `>` to `> ` is fixed.
+**Status:** Fourmolu configuration discovery and error handling are implemented. `src/Basilisk/Loop.hs` uses Fourmolu's config search and YAML parser; project ancestor files take precedence over the XDG user config. Printer options, fixity overrides and re-exports are passed into the formatter. Tests cover nested project precedence, XDG fallback, a custom indentation option, malformed YAML, and refusal to write on config failure. Literate fixtures cover blank Bird code lines, CRLF and missing-final-newline input, mixed line endings, prose and marker-like text, multiple LaTeX code regions, empty `.lhs` files, and malformed/nested/unmatched LaTeX markers. Formatter and validation failures preserve existing bytes and prevent quit-after-save. An experiment with Fourmolu 0.17.0.0 confirmed its in-process API parses supplied source as ordinary Haskell without the literate preprocessor; the implementation therefore shields prose and restores the literate layout around formatting.
 **Compatibility note:** The implementation decodes Fourmolu's exposed `Ormolu.Config.FourmoluConfig` type. Fourmolu identifies its top-level `Ormolu` module as the stable API; the configured GHC/Fourmolu matrix must catch changes to this config API.
 **Remaining evidence:** `src/Basilisk/Loop.hs` still recognizes Bird files by lines starting with `>` and LaTeX files by code-block markers, then reconstructs prose with generated marker lines. Current fixtures cover marker-like and indented prose, blank code lines, mixed endings, missing final newline, parse/config failures, complete output, and undo state. Cross-version validation remains dependent on the configured CI matrix; unusual malformed layouts and the custom reconstruction strategy still merit review.
 
-**Impact:** Save can reformat a file according to a policy different from the repository's expected policy. Unusual or malformed literate files may be misclassified, lose layout, or receive formatting that does not preserve intended structure. Since formatting is automatic on save, policy surprises are particularly costly.
+**Impact:** Fourmolu's in-process API behavior may change across supported versions, and unusual legal literate constructs outside the fixture matrix may still not round-trip as intended. Since formatting is automatic on save, policy surprises are particularly costly.
 
-**Work:** Verify the exposed config API on every configured Fourmolu branch. Extend malformed-layout coverage and review whether Fourmolu's supported literate input path can replace custom marker reconstruction; compare complete output and buffer/undo state as the fixture set grows.
+**Work:** Verify the exposed config API on every configured Fourmolu/compiler branch. Continue checking complete output, buffer/undo state, and unusual literate constructs as supported Haskell syntax evolves.
 
-**Acceptance:** Project and XDG config lookup works across supported compiler branches; supported literate forms preserve prose and file conventions in a golden fixture suite; invalid source/config never writes partially formatted output or marks the buffer clean.
+**Acceptance:** Project and XDG config lookup works across supported compiler branches; supported literate forms preserve prose and file conventions in a golden fixture suite; invalid source/config never writes partially formatted output, marks the buffer clean, or exits after a failed write.
 
 ### QF-05 — Terminal and filesystem failure coverage is useful but incomplete
 
@@ -149,4 +149,4 @@ The feature roadmap in `seby_pending_work.md` and the limitations in `Basilisk.m
 
 This report does not claim a complete formal audit of every key binding or every branch in the 2,440-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3; GitHub Actions run `44923039398` passed the configured GHC matrix. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
 
-**Recommended next gate:** complete QF-04's remaining literate-Haskell fixture cases and verify the Fourmolu config API across the configured compiler branches. QF-01 is closed and config lookup/error behavior now has focused coverage. Continue QF-05's remaining filesystem and exceptional-terminal cases before release; the basic PTY harness and selected write-race/failure tests already exist.
+**Recommended next gate:** verify the Fourmolu config API across the configured compiler branches and continue checking unusual literate-Haskell constructs. QF-01 is closed and config lookup/error behavior has focused coverage. Continue QF-05's remaining filesystem and exceptional-terminal cases before release; the basic PTY harness and selected write-race/failure tests already exist.
