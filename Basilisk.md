@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: 11 modules, 2472 lines of code. The verification
+Status, in one line: 11 modules, 2479 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -941,13 +941,13 @@ prototype, measured, before adoption.
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
 | `Basilisk.Indent` | Haskell live indentation | 91 | 117 |
 | `Basilisk.File` | open and write, encoding-safe | 305 | 425 |
-| `Basilisk.Loop` | the IO shell and save-time formatting | 213 | 255 |
+| `Basilisk.Loop` | the IO shell and save-time formatting | 220 | 261 |
 | `Main` | argument parsing | 66 | 76 |
-| **Total** | | **2472** | |
+| **Total** | | **2479** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **2472 lines against a 3,000 ceiling**, leaving 528
+specified — is **2479 lines against a 3,000 ceiling**, leaving 521
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -961,7 +961,7 @@ Tests, which do not count against the ceiling:
 | `test/Gen.hs` | Unicode-hostile generators | 136 | 187 |
 | `test/Smoke.hs` | worked examples, in vim's vocabulary | 527 | 597 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
-| `test/Formatter.hs` | save-time Haskell formatter integration | 285 | 290 |
+| `test/Formatter.hs` | save-time Haskell formatter integration | 291 | 296 |
 
 ## 2.14 Deliberately out of scope for v1
 
@@ -4891,7 +4891,14 @@ formatHaskell sourcePath source = do
       IO (Either SomeException Text)
   pure (either (Left . friendlyError . Text.pack . displayException) Right result)
  where
-  friendlyError = Text.replace "<literate>.hs" (Text.pack sourcePath)
+  friendlyError exception =
+    let sourceName = Text.pack sourcePath
+        detail = Text.unwords (Text.words (Text.replace "<literate>.hs" sourceName exception))
+        prefix = if sourceName `Text.isInfixOf` detail then "" else sourceName <> ": "
+        available = max 0 (511 - Text.length prefix)
+        shortened = Text.take available detail
+        suffix = if Text.length detail > available then "…" else ""
+     in prefix <> shortened <> suffix
   synchronous exception = case fromException exception :: Maybe AsyncException of
     Just _ -> Nothing
     Nothing -> Just exception
@@ -4996,7 +5003,6 @@ rebuildLiterate markers bird = Text.intercalate "\n" . snd . mapAccumL restore F
       | "\\end{code}" `Text.isPrefixOf` original -> (False, original)
       | otherwise -> (inside, original)
     Nothing -> (inside, if bird then (if Text.null line then ">" else "> " <> line) else line)
-
 ```
 
 ### `app/Main.hs`
@@ -7129,7 +7135,13 @@ main = do
       "invalid Haskell is not written or quit"
       ( not exists
           && not quitRequested
-          && maybe False (Text.isPrefixOf "format failed:") (status rejected)
+          && maybe False
+            (\message ->
+              "format failed:" `Text.isPrefixOf` message
+                && Text.pack broken `Text.isInfixOf` message
+                && Text.length message <= 527
+            )
+            (status rejected)
       )
     createDirectory badConfigDir
     Text.writeFile (badConfigDir </> "fourmolu.yaml") "indentation: not-an-integer\n"

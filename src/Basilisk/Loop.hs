@@ -147,7 +147,14 @@ formatHaskell sourcePath source = do
       IO (Either SomeException Text)
   pure (either (Left . friendlyError . Text.pack . displayException) Right result)
  where
-  friendlyError = Text.replace "<literate>.hs" (Text.pack sourcePath)
+  friendlyError exception =
+    let sourceName = Text.pack sourcePath
+        detail = Text.unwords (Text.words (Text.replace "<literate>.hs" sourceName exception))
+        prefix = if sourceName `Text.isInfixOf` detail then "" else sourceName <> ": "
+        available = max 0 (511 - Text.length prefix)
+        shortened = Text.take available detail
+        suffix = if Text.length detail > available then "…" else ""
+     in prefix <> shortened <> suffix
   synchronous exception = case fromException exception :: Maybe AsyncException of
     Just _ -> Nothing
     Nothing -> Just exception

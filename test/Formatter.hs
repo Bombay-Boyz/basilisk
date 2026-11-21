@@ -210,7 +210,13 @@ main = do
       "invalid Haskell is not written or quit"
       ( not exists
           && not quitRequested
-          && maybe False (Text.isPrefixOf "format failed:") (status rejected)
+          && maybe False
+            (\message ->
+              "format failed:" `Text.isPrefixOf` message
+                && Text.pack broken `Text.isInfixOf` message
+                && Text.length message <= 527
+            )
+            (status rejected)
       )
     createDirectory badConfigDir
     Text.writeFile (badConfigDir </> "fourmolu.yaml") "indentation: not-an-integer\n"
