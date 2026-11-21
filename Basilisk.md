@@ -961,7 +961,7 @@ Tests, which do not count against the ceiling:
 | `test/Gen.hs` | Unicode-hostile generators | 136 | 187 |
 | `test/Smoke.hs` | worked examples, in vim's vocabulary | 527 | 597 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
-| `test/Formatter.hs` | save-time Haskell formatter integration | 291 | 296 |
+| `test/Formatter.hs` | save-time Haskell formatter integration | 319 | 324 |
 
 ## 2.14 Deliberately out of scope for v1
 
@@ -6949,6 +6949,7 @@ main :: IO ()
 main = do
   withSystemTempDirectory "basilisk-formatter" $ \dir -> do
     let hs = dir </> "Main.hs"
+        semanticHs = dir </> "Semantic.hs"
         lhs = dir </> "Literate.lhs"
         latex = dir </> "Latex.lhs"
         birdEdge = dir </> "BirdEdge.lhs"
@@ -6988,6 +6989,33 @@ main = do
       ( not (modified formatted)
           && "answer = 42" `Text.isInfixOf` Doc.toText (document formatted)
           && "answer=42" `Text.isInfixOf` Doc.toText (document (fst (step (InNormal (NUndo 1)) formatted)))
+      )
+    let semanticSource =
+          "module Semantic where\n\n-- imported names used by this module\nimport Data.Maybe (fromMaybe)\n\ninfixr 5 <+>\n\ndata Expr = A | B | C\n\n-- This operator is intentionally right associative.\n(<+>) :: Expr -> Expr -> Expr\n_ <+> right = right\n\nchain = A <+> B <+> C"
+    (semanticFormatted, _) <- write semanticHs semanticSource
+    semanticBytes <- Text.readFile semanticHs
+    check
+      "formatting preserves a custom fixity declaration and surrounding comments"
+      ( status semanticFormatted == Just "written"
+          && "-- imported names used by this module" `Text.isInfixOf` semanticBytes
+          && "-- This operator is intentionally right associative." `Text.isInfixOf` semanticBytes
+          && "infixr 5 <+>" `Text.isInfixOf` semanticBytes
+          && "chain = A <+> B <+> C" `Text.isInfixOf` semanticBytes
+      )
+    let undoBeforeRepeat = fst (step (InNormal (NUndo 1)) semanticFormatted)
+    (repeatedFormat, _) <-
+      perform
+        (semanticFormatted, False)
+        (WriteFile semanticHs (Doc.toText (document semanticFormatted)) False False)
+    repeatedSemanticBytes <- Text.readFile semanticHs
+    let undoAfterRepeat = fst (step (InNormal (NUndo 1)) repeatedFormat)
+    check
+      "repeated formatting is byte-idempotent and does not add a history change"
+      ( status repeatedFormat == Just "written"
+          && semanticBytes == repeatedSemanticBytes
+          && version semanticFormatted == version repeatedFormat
+          && Doc.toText (document undoBeforeRepeat) == Doc.toText (document undoAfterRepeat)
+          && not (modified repeatedFormat)
       )
     createDirectory twoSpaceDir
     Text.writeFile (twoSpaceDir </> "fourmolu.yaml") "indentation: 2\n"
