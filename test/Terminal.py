@@ -18,7 +18,7 @@ import unittest
 class TerminalCase(unittest.TestCase):
     executable = None
 
-    def run_editor(self, path, keys, initial_size=(10, 50), resize=None, arguments=None, cwd=None):
+    def run_editor(self, path, keys, initial_size=(10, 50), resize=None, arguments=None, cwd=None, before_send=None):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", *initial_size, 0, 0))
         original = termios.tcgetattr(slave)
@@ -58,6 +58,8 @@ class TerminalCase(unittest.TestCase):
                 time.sleep(0.25)
                 if sent == 0:
                     time.sleep(0.25)
+                if before_send is not None:
+                    before_send(sent)
                 os.write(master, chunks[sent])
                 sent += 1
                 time.sleep(0.12)
@@ -175,6 +177,50 @@ class TerminalCase(unittest.TestCase):
                 self.assertEqual(source.read(), b"hello!\n")
             self.assertIn(b"written", output.lower())
             self.assertIn(b"\x1b[?1049l", output)
+            self.assertEqual(original, restored)
+
+    def test_w_refuses_to_overwrite_a_file_changed_after_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "notes.txt")
+            with open(path, "wb") as target:
+                target.write(b"original\n")
+
+            def change_file_before_write(index):
+                if index == 2:
+                    with open(path, "wb") as target:
+                        target.write(b"outside change\n")
+
+            output, code, (original, restored) = self.run_editor(
+                path,
+                [b"iworking-", b"\x1b", b":w\r", b":q!\r"],
+                before_send=change_file_before_write,
+            )
+            self.assertEqual(code, 0)
+            self.assertIn(b"file changed on disk", output.lower())
+            with open(path, "rb") as source:
+                self.assertEqual(source.read(), b"outside change\n")
+            self.assertEqual(original, restored)
+
+    def test_w_force_overwrites_a_file_changed_after_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "notes.txt")
+            with open(path, "wb") as target:
+                target.write(b"original\n")
+
+            def change_file_before_write(index):
+                if index == 2:
+                    with open(path, "wb") as target:
+                        target.write(b"outside change\n")
+
+            output, code, (original, restored) = self.run_editor(
+                path,
+                [b"iworking-", b"\x1b", b":w!\r", b":q\r"],
+                before_send=change_file_before_write,
+            )
+            self.assertEqual(code, 0)
+            with open(path, "rb") as source:
+                self.assertEqual(source.read(), b"working-original\n")
+            self.assertIn(b"written", output.lower())
             self.assertEqual(original, restored)
 
     def test_formatter_error_keeps_editor_open_until_force_quit(self):
