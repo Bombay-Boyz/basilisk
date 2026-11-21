@@ -164,6 +164,19 @@ class TerminalCase(unittest.TestCase):
             self.assertIn(b"\x1b[?1049l", output)
             self.assertEqual(original, restored)
 
+    def test_writes_with_w_and_continues_editing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "notes.txt")
+            output, code, (original, restored) = self.run_editor(
+                path, [b"ihello", b"\x1b", b":w\r", b"a!", b"\x1b", b":wq\r"]
+            )
+            self.assertEqual(code, 0)
+            with open(path, "rb") as source:
+                self.assertEqual(source.read(), b"hello!\n")
+            self.assertIn(b"written", output.lower())
+            self.assertIn(b"\x1b[?1049l", output)
+            self.assertEqual(original, restored)
+
     def test_formatter_error_keeps_editor_open_until_force_quit(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "Broken.hs")
