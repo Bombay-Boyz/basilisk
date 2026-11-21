@@ -166,6 +166,19 @@ class TerminalCase(unittest.TestCase):
                 self.assertEqual(source.read(), b"module Broken where\nmain =\n")
             self.assertEqual(original, restored)
 
+    def test_formatter_error_on_ZZ_keeps_editor_open_until_force_quit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "Broken.hs")
+            original_source = b"module Broken where\nmain =\n"
+            with open(path, "wb") as target:
+                target.write(original_source)
+            output, code, (original, restored) = self.run_editor(path, [b"Z", b"Z", b":q!\r"])
+            self.assertEqual(code, 0)
+            self.assertIn(b"format", output.lower())
+            with open(path, "rb") as source:
+                self.assertEqual(source.read(), original_source)
+            self.assertEqual(original, restored)
+
     def test_resize_then_quit(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "resize.txt")
