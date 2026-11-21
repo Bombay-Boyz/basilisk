@@ -122,7 +122,7 @@ main = do
           && not (modified repeatedFormat)
       )
     let cppSource =
-          "{-# LANGUAGE CPP #-}\nmodule Main where\n\nmain = print answer\n\n#ifdef BASILISK_TRUE\nanswer = 42\n#else\nanswer = 7\n#endif"
+          "{-# LANGUAGE CPP #-}\nmodule Main where\n\n#ifdef BASILISK_TRUE\nimport Data.List (intercalate)\n#else\nimport Data.Char (ord)\n#endif\n\nmain = print answer\n\n#ifdef BASILISK_TRUE\nselected :: [String]\nselected = [\"4\", \"2\"]\nanswer = read (intercalate \"\" selected) :: Int\n#else\nselected :: Char\nselected = 'G'\nanswer = ord selected\n#endif"
     Text.writeFile cppHs cppSource
     (cppBeforeTrue, cppOutputBeforeTrue, cppErrorBeforeTrue) <-
       compileAndRun cppBeforeTrueDir cppHs ["-cpp", "-DBASILISK_TRUE"]
@@ -130,7 +130,7 @@ main = do
       compileAndRun cppBeforeFalseDir cppHs ["-cpp"]
     check ("the CPP fixture's true branch compiles before formatting: " <> cppErrorBeforeTrue) (cppBeforeTrue == ExitSuccess)
     check ("the CPP fixture's false branch compiles before formatting: " <> cppErrorBeforeFalse) (cppBeforeFalse == ExitSuccess)
-    check "the CPP fixture starts with the expected branch results" (cppOutputBeforeTrue == "42\n" && cppOutputBeforeFalse == "7\n")
+    check "the CPP fixture starts with the expected branch results" (cppOutputBeforeTrue == "42\n" && cppOutputBeforeFalse == "71\n")
     cppEditor <- File.openFile cppHs
     (cppFormatted, _) <-
       perform (cppEditor, False)
@@ -146,6 +146,10 @@ main = do
           && "#ifdef BASILISK_TRUE" `Text.isInfixOf` cppBytes
           && "#else" `Text.isInfixOf` cppBytes
           && "#endif" `Text.isInfixOf` cppBytes
+          && "import Data.List (intercalate)" `Text.isInfixOf` cppBytes
+          && "import Data.Char (ord)" `Text.isInfixOf` cppBytes
+          && "selected :: [String]" `Text.isInfixOf` cppBytes
+          && "selected :: Char" `Text.isInfixOf` cppBytes
           && cppAfterTrue == ExitSuccess
           && cppAfterFalse == ExitSuccess
           && cppErrorAfterTrue == ""
