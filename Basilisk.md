@@ -961,7 +961,7 @@ Tests, which do not count against the ceiling:
 | `test/Gen.hs` | Unicode-hostile generators | 136 | 187 |
 | `test/Smoke.hs` | worked examples, in vim's vocabulary | 527 | 597 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
-| `test/Formatter.hs` | save-time Haskell formatter integration | 395 | 401 |
+| `test/Formatter.hs` | save-time Haskell formatter integration | 414 | 420 |
 
 ## 2.14 Deliberately out of scope for v1
 
@@ -6951,6 +6951,8 @@ main :: IO ()
 main = do
   withSystemTempDirectory "basilisk-formatter" $ \dir -> do
     let hs = dir </> "Main.hs"
+        extensionBeforeDir = dir </> "extension-before"
+        extensionAfterDir = dir </> "extension-after"
         semanticHs = dir </> "Semantic.hs"
         semanticBeforeDir = dir </> "semantic-before"
         semanticAfterDir = dir </> "semantic-after"
@@ -6988,11 +6990,28 @@ main = do
     Text.writeFile
       (dir </> "formatter.cabal")
       "cabal-version: 3.0\nname: formatter-fixture\nversion: 0.1.0.0\nbuild-type: Simple\nlibrary\n  hs-source-dirs: .\n  exposed-modules: Main\n  default-language: GHC2021\n  default-extensions: RankNTypes\n  build-depends: base\n"
-    (formatted, _) <- write hs "module Main where\n\nanswer=42\n\napply :: (forall a. a -> a) -> Int\napply f = f 1"
+    let extensionSource = "module Main where\n\nanswer=42\n\napply :: (forall a. a -> a) -> Int\napply f = f 1\n\nmain = print (apply id)"
+    Text.writeFile hs extensionSource
+    (extensionBefore, extensionOutputBefore, extensionErrorBefore) <-
+      compileAndRun extensionBeforeDir hs ["-XRankNTypes"]
+    check ("the component-extension fixture compiles before formatting: " <> extensionErrorBefore) (extensionBefore == ExitSuccess)
+    check "the component-extension fixture runs before formatting" (extensionOutputBefore == "1\n")
+    extensionEditor <- File.openFile hs
+    (formatted, _) <-
+      perform (extensionEditor, False)
+        (WriteFile hs (Doc.toText (document extensionEditor)) False False)
     check ("Haskell is formatted before it is written: " <> show (status formatted)) (status formatted == Just "written")
     savedHaskell <- Text.readFile hs
+    (extensionAfter, extensionOutputAfter, extensionErrorAfter) <-
+      compileAndRun extensionAfterDir hs ["-XRankNTypes"]
     check "the formatted source is the persisted source" ("answer = 42" `Text.isInfixOf` savedHaskell)
     check "Cabal default extensions are used by the formatter" ("apply :: (forall a. a -> a) -> Int" `Text.isInfixOf` savedHaskell)
+    check
+      "Cabal component extension formatting preserves compilability and behavior"
+      ( extensionAfter == ExitSuccess
+          && extensionErrorAfter == ""
+          && extensionOutputAfter == extensionOutputBefore
+      )
     check
       "the formatted buffer is clean and undoable"
       ( not (modified formatted)
