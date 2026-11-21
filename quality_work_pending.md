@@ -1,7 +1,7 @@
 # Basilisk forensic quality audit and pending work
 
 **Audit date:** 2026-11-21
-**Audited checkout baseline:** `main`, commit `6216a29` (`Test successful ZZ save and quit`); this update reconciles formatter status and current verification evidence.
+**Audited checkout baseline:** `main`, commit `a8f9bcc` (`Test continuing after a successful write`); this update reconciles formatter status and current verification evidence.
 **Scope:** repository contents, architecture, file safety, CLI behavior, build and verification controls, test evidence, and user-facing documentation. This is a source-level and local verification audit, not a security certification or a full interactive terminal acceptance test.
 
 ## Executive assessment
@@ -14,7 +14,7 @@ This audit was refreshed after the formatter reliability milestones through `d11
 
 ## Verification evidence
 
-`./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3 at `6216a29`. It includes build, all four test suites, the
+`./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3 at `a8f9bcc`. It includes build, all four test suites, the
 partial-function sweep, line-count ceiling, benchmarks, CLI/PTY checks and
 generated-document consistency. The completed GitHub Actions run for commit
 `b1837f2` also passed all four configured GHC jobs; the run is linked from
@@ -33,7 +33,7 @@ generated-document consistency. The completed GitHub Actions run for commit
 | Generated `Basilisk.md` consistency | Passed |
 | Full `scripts/check.sh` | **ALL CHECKS PASSED** |
 
-The observed local toolchain is **GHC 9.10.3 on macOS arm64**. The full local check passed on that combination at `6216a29`. GitHub Actions run `44923039398` passed the configured Ubuntu 24.04 jobs for GHC 9.10, 9.12, 9.14 and `latest` at commit `b1837f2`, including the scoped `hpc` workaround. That remote result predates the latest formatter test additions and is not evidence that `6216a29` passed the compiler matrix.
+The observed local toolchain is **GHC 9.10.3 on macOS arm64**. The full local check passed on that combination at `a8f9bcc`. GitHub Actions run `44923039398` passed the configured Ubuntu 24.04 jobs for GHC 9.10, 9.12, 9.14 and `latest` at commit `b1837f2`, including the scoped `hpc` workaround. That remote result predates the latest formatter test additions and is not evidence that `a8f9bcc` passed the compiler matrix.
 
 ## Findings and remediation plan
 
@@ -146,6 +146,6 @@ The feature roadmap in `seby_pending_work.md` and the limitations in `Basilisk.m
 
 ## Audit boundaries and next gate
 
-This report does not claim a complete formal audit of every key binding or every branch in the 2,479-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed at `6216a29` on macOS arm64 with GHC 9.10.3; GitHub Actions run `44923039398` passed the configured GHC matrix at the earlier `b1837f2` baseline. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
+This report does not claim a complete formal audit of every key binding or every branch in the 2,479-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed at `a8f9bcc` on macOS arm64 with GHC 9.10.3; GitHub Actions run `44923039398` passed the configured GHC matrix at the earlier `b1837f2` baseline. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
 
 **Recommended next gate:** verify the Fourmolu config API across the configured compiler branches and continue checking unusual literate-Haskell constructs. QF-01 is closed and config lookup/error behavior has focused coverage. Continue QF-05's remaining filesystem and exceptional-terminal cases before release; the basic PTY harness and selected write-race/failure tests already exist.
