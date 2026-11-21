@@ -51,6 +51,7 @@ library
     , text-icu    >=0.8  && <0.9
     , vty         >=6.0  && <7
     , vty-unix    >=0.2  && <0.5
+    , yaml        >=0.11.6 && <1
   if impl(ghc >=9.14)
     build-depends: fourmolu >=0.20 && <0.22
   else
@@ -93,7 +94,7 @@ test-suite Basilisk-formatter
   type:               exitcode-stdio-1.0
   hs-source-dirs:     test
   main-is:            Formatter.hs
-  build-depends:      base, text, directory, filepath, temporary, unix, Basilisk
+  build-depends:      base, bytestring, text, directory, filepath, temporary, unix, Basilisk
 
 -- Totality sweep: every (mode, command, document) shape, forced to
 -- normal form, checked only for freedom from exceptions.

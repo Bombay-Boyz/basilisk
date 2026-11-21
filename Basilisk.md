@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: ten modules, 2402 lines of code. The verification
+Status, in one line: 11 modules, 2421 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -262,6 +262,9 @@ successful formatting change is recorded as one undoable edit and becomes
 the new saved buffer. Parse or formatter failures leave the file untouched.
 The formatter reads the matching Cabal component's language extensions
 and dependencies so parsing and operator fixities follow the project.
+It also uses Fourmolu's configuration lookup and YAML parser: the nearest
+project `fourmolu.yaml` takes precedence over the user XDG config. Invalid
+configuration prevents the write with a status message.
 The two booleans are the force-write override and `quitOnSuccess`.
 `:q` returns `RequestQuit` when the buffer is clean. `:wq` and `ZZ` set
 the write effect's `quitOnSuccess` flag; the shell requests termination
@@ -938,13 +941,13 @@ prototype, measured, before adoption.
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
 | `Basilisk.Indent` | Haskell live indentation | 91 | 117 |
 | `Basilisk.File` | open and write, encoding-safe | 305 | 425 |
-| `Basilisk.Loop` | the IO shell and save-time formatting | 162 | 195 |
+| `Basilisk.Loop` | the IO shell and save-time formatting | 181 | 218 |
 | `Main` | argument parsing | 47 | 55 |
-| **Total** | | **2402** | |
+| **Total** | | **2421** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **2402 lines against a 3,000 ceiling**, leaving 598
+specified — is **2421 lines against a 3,000 ceiling**, leaving 579
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -958,15 +961,16 @@ Tests, which do not count against the ceiling:
 | `test/Gen.hs` | Unicode-hostile generators | 136 | 187 |
 | `test/Smoke.hs` | worked examples, in vim's vocabulary | 527 | 597 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
-| `test/Formatter.hs` | save-time Haskell formatter integration | 138 | 143 |
+| `test/Formatter.hs` | save-time Haskell formatter integration | 235 | 240 |
 
 ## 2.14 Deliberately out of scope for v1
 
 Vimscript or Lua, a plugin framework, GUI/mouse interaction, a terminal
 emulator, session management, parser-backed diagnostics and LSP integration.
-Haskell save-time formatting and conservative live indentation are built in;
-comments and structural navigation remain future work. Markdown and plain
-text are not reformatted.
+Haskell save-time formatting and conservative live indentation are built in.
+Save formatting follows project or XDG `fourmolu.yaml` settings when present;
+without a file, it uses Fourmolu defaults. Comments and structural navigation
+remain future work. Markdown and plain text are not reformatted.
 Named registers, macros, visual mode, ex ranges and substitutions are
 also deferred. Operator text objects support words, quotes and balanced
 delimiters through @iw@/@aw@, @i"@/@a"@ and @i(@/@a(@ (with matching
@@ -976,11 +980,12 @@ bracket aliases), including counts and nested delimiters.
 
 # Part 3 — Code
 
-All ten modules below compile under
+All 11 modules below compile under
 `-Wall -Wcompat -Wincomplete-patterns -Wincomplete-uni-patterns
 -Wincomplete-record-updates -Werror=incomplete-patterns
--Wredundant-constraints -O2` with **zero warnings**, on GHC 9.14.1. Part 4
-states exactly what has been run.
+-Wredundant-constraints -O2`. The latest local zero-warning build was
+verified on macOS arm64 with GHC 9.10.3. Part 4 states exactly what has been
+run; configured remote CI outcomes are not implied.
 
 ### `Basilisk.cabal`
 
@@ -1038,6 +1043,7 @@ library
     , text-icu    >=0.8  && <0.9
     , vty         >=6.0  && <7
     , vty-unix    >=0.2  && <0.5
+    , yaml        >=0.11.6 && <1
   if impl(ghc >=9.14)
     build-depends: fourmolu >=0.20 && <0.22
   else
@@ -1080,7 +1086,7 @@ test-suite Basilisk-formatter
   type:               exitcode-stdio-1.0
   hs-source-dirs:     test
   main-is:            Formatter.hs
-  build-depends:      base, text, directory, filepath, temporary, unix, Basilisk
+  build-depends:      base, bytestring, text, directory, filepath, temporary, unix, Basilisk
 
 -- Totality sweep: every (mode, command, document) shape, forced to
 -- normal form, checked only for freedom from exceptions.
@@ -4757,6 +4763,7 @@ import Data.List (mapAccumL)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Yaml as Yaml
 import qualified Graphics.Vty as Vty
 import Graphics.Vty.Platform.Unix (mkVty)
 import Ormolu
@@ -4769,7 +4776,12 @@ import Ormolu
   , getCabalInfoForSourceFile
   , refineConfig
   )
-import System.FilePath (takeExtension)
+import Ormolu.Config
+  ( FourmoluConfig (..)
+  , findConfigFile
+  , resolvePrinterOpts
+  )
+import System.FilePath (takeDirectory, takeExtension)
 
 import Basilisk.Cursor (desiredColumn, unicode)
 import Basilisk.Decode (KeyState, decode, initialKeyState)
@@ -4883,12 +4895,29 @@ formatHaskell sourcePath source = do
 configFor :: FilePath -> IO (Config RegionIndices)
 configFor sourcePath = do
   cabalResult <- getCabalInfoForSourceFile sourcePath
+  fourmoluConfig <- loadFourmoluConfig sourcePath
   let cabalInfo = case cabalResult of
         CabalNotFound -> Nothing
         CabalDidNotMention info -> Just info
         CabalFound info -> Just info
       baseConfig = (defaultConfig :: Config RegionIndices) { cfgCheckIdempotence = True }
-  pure (refineConfig (detectSourceType sourcePath) cabalInfo Nothing Nothing baseConfig)
+      fixities = cfgFileFixities <$> fourmoluConfig
+      reexports = cfgFileReexports <$> fourmoluConfig
+      printerOptions = maybe [] (pure . cfgFilePrinterOpts) fourmoluConfig
+      refined = refineConfig (detectSourceType sourcePath) cabalInfo fixities reexports baseConfig
+  pure refined { cfgPrinterOpts = resolvePrinterOpts printerOptions }
+
+-- Fourmolu owns both the search order (nearest project ancestor, then XDG)
+-- and the YAML schema. Keep its parse errors on the existing safe-save path:
+-- formatting fails before the file writer can replace anything.
+loadFourmoluConfig :: FilePath -> IO (Maybe FourmoluConfig)
+loadFourmoluConfig sourcePath =
+  findConfigFile (takeDirectory sourcePath) >>= \case
+    Left _ -> pure Nothing
+    Right configPath -> Yaml.decodeFileEither configPath >>= \case
+      Left problem -> ioError (userError
+        ("failed to load " <> configPath <> ":\n" <> Yaml.prettyPrintParseException problem))
+      Right config -> pure (Just config)
 
 literateSource :: Text -> Maybe (Text, Map.Map Text Text, Bool)
 literateSource source
@@ -4930,7 +4959,7 @@ rebuildLiterate markers bird = Text.intercalate "\n" . snd . mapAccumL restore F
       | "\\begin{code}" `Text.isPrefixOf` original -> (True, original)
       | "\\end{code}" `Text.isPrefixOf` original -> (False, original)
       | otherwise -> (inside, original)
-    Nothing -> (inside, if bird then "> " <> line else line)
+    Nothing -> (inside, if bird then (if Text.null line then ">" else "> " <> line) else line)
 ```
 
 ### `app/Main.hs`
@@ -6835,9 +6864,13 @@ main = do
 module Main (main) where
 
 import Control.Monad (unless)
+import Control.Exception (bracket_)
+import Data.ByteString qualified as ByteString
+import Data.ByteString.Char8 qualified as ByteString8
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
-import System.Directory (doesFileExist, renameFile)
+import System.Directory (createDirectory, doesFileExist, renameFile)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix.Files (accessTimeHiRes, getFileStatus, modificationTimeHiRes, setFileTimesHiRes)
@@ -6854,6 +6887,11 @@ main = do
     let hs = dir </> "Main.hs"
         lhs = dir </> "Literate.lhs"
         latex = dir </> "Latex.lhs"
+        birdEdge = dir </> "BirdEdge.lhs"
+        latexRegions = dir </> "LatexRegions.lhs"
+        emptyLiterate = dir </> "Empty.lhs"
+        brokenLiterate = dir </> "BrokenLiterate.lhs"
+        mixedLiterate = dir </> "MixedEol.lhs"
         markdown = dir </> "notes.md"
         broken = dir </> "Broken.hs"
         syncFailure = dir </> "sync-failure.txt"
@@ -6861,9 +6899,15 @@ main = do
         replacedPath = dir </> "replaced.txt"
         replacement = dir </> "replacement.tmp"
         raced = dir </> "raced.txt"
+        twoSpaceDir = dir </> "two-space"
+        badConfigDir = dir </> "bad-config"
+        xdgDir = dir </> "xdg"
         editor file source = newEditor (Just file) source
         write file source = perform (editor file source, False) (WriteFile file source False False)
         writeQuit file source = perform (editor file source, False) (WriteFile file source False True)
+    Text.writeFile (dir </> "fourmolu.yaml") "indentation: 4\n"
+    createDirectory xdgDir
+    Text.writeFile (xdgDir </> "fourmolu.yaml") "indentation: 6\n"
     Text.writeFile
       (dir </> "formatter.cabal")
       "cabal-version: 3.0\nname: formatter-fixture\nversion: 0.1.0.0\nbuild-type: Simple\nlibrary\n  hs-source-dirs: .\n  exposed-modules: Main\n  default-language: GHC2021\n  default-extensions: RankNTypes\n  build-depends: base\n"
@@ -6878,6 +6922,30 @@ main = do
           && "answer = 42" `Text.isInfixOf` Doc.toText (document formatted)
           && "answer=42" `Text.isInfixOf` Doc.toText (document (fst (step (InNormal (NUndo 1)) formatted)))
       )
+    createDirectory twoSpaceDir
+    Text.writeFile (twoSpaceDir </> "fourmolu.yaml") "indentation: 2\n"
+    let configuredSource = "module Configured where\nmain = do\nputStrLn \"one\"\nputStrLn \"two\""
+        configuredFile = twoSpaceDir </> "Configured.hs"
+    (configured, _) <- write configuredFile configuredSource
+    savedConfigured <- Text.readFile configuredFile
+    check
+      "the nearest project fourmolu.yaml controls formatting"
+      ( status configured == Just "written"
+          && "  putStrLn \"one\"" `Text.isInfixOf` savedConfigured
+          && not ("    putStrLn \"one\"" `Text.isInfixOf` savedConfigured)
+      )
+    withSystemTempDirectory "basilisk-xdg-config" $ \xdgProject -> do
+      previousXdg <- lookupEnv "XDG_CONFIG_HOME"
+      let restoreXdg = maybe (unsetEnv "XDG_CONFIG_HOME") (setEnv "XDG_CONFIG_HOME") previousXdg
+          xdgFile = xdgProject </> "XdgConfig.hs"
+      bracket_ (setEnv "XDG_CONFIG_HOME" xdgDir) restoreXdg $ do
+        (xdgFormatted, _) <- write xdgFile "module XdgConfig where\nmain = do\nputStrLn \"one\""
+        xdgSaved <- Text.readFile xdgFile
+        check
+          "the user XDG fourmolu.yaml is used when no project config exists"
+          ( status xdgFormatted == Just "written"
+              && "      putStrLn \"one\"" `Text.isInfixOf` xdgSaved
+          )
     (literate, _) <- write lhs "Literate Haskell.\n> module Literate where\n>\n> value=7"
     literateExists <- doesFileExist lhs
     check ("literate Haskell file exists after save: " <> show (status literate)) literateExists
@@ -6897,6 +6965,53 @@ main = do
           && "\\begin{code}" `Text.isInfixOf` savedLatex
           && "value = 8" `Text.isInfixOf` savedLatex
       )
+    Text.writeFile birdEdge "Bird prose.\r\n  indented prose.\r\n-- BASILISK_INTERNAL_LITERATE_0_00000000\r\n\r\n> module BirdEdge where\r\n>\r\n> value=9"
+    birdEditor <- File.openFile birdEdge
+    (birdWritten, _) <- perform (birdEditor, False) (WriteFile birdEdge (Doc.toText (document birdEditor)) False False)
+    savedBirdEdge <- Text.readFile birdEdge
+    check
+      "Bird files preserve prose, blank code lines, CRLF, and a missing final newline byte-for-byte around formatted code"
+      ( status birdWritten == Just "written"
+          && savedBirdEdge == "Bird prose.\r\n  indented prose.\r\n-- BASILISK_INTERNAL_LITERATE_0_00000000\r\n\r\n> module BirdEdge where\r\n>\r\n> value = 9"
+      )
+    check
+      "literate formatting is a single undoable buffer change"
+      ( not (modified birdWritten)
+          && "value = 9" `Text.isInfixOf` Doc.toText (document birdWritten)
+          && "value=9" `Text.isInfixOf` Doc.toText (document (fst (step (InNormal (NUndo 1)) birdWritten)))
+      )
+    ByteString8.writeFile mixedLiterate "Bird prose.\r\n> module MixedEol where\n> value=10\r\n"
+    mixedEditor <- File.openFile mixedLiterate
+    (mixedWritten, _) <- perform (mixedEditor, False) (WriteFile mixedLiterate (Doc.toText (document mixedEditor)) False False)
+    mixedBytes <- ByteString.readFile mixedLiterate
+    check
+      "mixed line endings on literate input preserve existing terminators and the final-EOL flag"
+      ( status mixedWritten == Just "written"
+          && mixedBytes == "Bird prose.\r\n> module MixedEol where\n>\r\n> value = 10\r\n"
+      )
+    Text.writeFile latexRegions "LaTeX prose.\n\\begin{code}\nmodule Regions where\nfirst=1\n\\end{code}\ninter-region prose.\n\\begin{code}\nsecond=2\n\\end{code}\n"
+    regionsEditor <- File.openFile latexRegions
+    (regionsWritten, _) <- perform (regionsEditor, False) (WriteFile latexRegions (Doc.toText (document regionsEditor)) False False)
+    savedRegions <- Text.readFile latexRegions
+    check
+      "multiple LaTeX code regions retain delimiters and intervening prose in complete output"
+      ( status regionsWritten == Just "written"
+          && savedRegions == "LaTeX prose.\n\\begin{code}\nmodule Regions where\n\nfirst = 1\n\n\\end{code}\ninter-region prose.\n\\begin{code}\nsecond = 2\n\n\\end{code}\n"
+      )
+    Text.writeFile emptyLiterate ""
+    emptyEditor <- File.openFile emptyLiterate
+    (emptyWritten, _) <- perform (emptyEditor, False) (WriteFile emptyLiterate (Doc.toText (document emptyEditor)) False False)
+    emptyBytes <- Text.readFile emptyLiterate
+    check "an empty literate file remains empty after save" (status emptyWritten == Just "written" && Text.null emptyBytes)
+    (badLiterate, badLiterateQuit) <- writeQuit brokenLiterate "> module BrokenLiterate where\n> value =\n"
+    badLiterateExists <- doesFileExist brokenLiterate
+    check
+      "a parse failure in Bird code leaves the file absent and the buffer unsaved"
+      ( not badLiterateExists
+          && not badLiterateQuit
+          && Doc.toText (document badLiterate) == "> module BrokenLiterate where\n> value =\n"
+          && maybe False (Text.isPrefixOf "format failed:") (status badLiterate)
+      )
     (plain, _) <- write markdown "#title\ntext  with   spaces"
     savedMarkdown <- Text.readFile markdown
     check "Markdown is saved without formatting" (status plain == Just "written" && savedMarkdown == "#title\ntext  with   spaces")
@@ -6907,6 +7022,17 @@ main = do
       ( not exists
           && not quitRequested
           && maybe False (Text.isPrefixOf "format failed:") (status rejected)
+      )
+    createDirectory badConfigDir
+    Text.writeFile (badConfigDir </> "fourmolu.yaml") "indentation: not-an-integer\n"
+    let badConfigSource = badConfigDir </> "ConfigError.hs"
+    (badConfig, quitAfterBadConfig) <- writeQuit badConfigSource "module ConfigError where\nanswer = 42"
+    badConfigWasWritten <- doesFileExist badConfigSource
+    check
+      "an invalid Fourmolu config prevents writing and reports the config path"
+      ( not badConfigWasWritten
+          && not quitAfterBadConfig
+          && maybe False (\message -> "format failed:" `Text.isPrefixOf` message && "fourmolu.yaml" `Text.isInfixOf` message) (status badConfig)
       )
     Text.writeFile sameTime "alpha"
     oldSameTimeStamp <- File.stampOf sameTime
@@ -6981,16 +7107,17 @@ check label condition = unless condition (fail ("FAILED: " <> label))
 
 Declared compiler compatibility starts at GHC 9.10. Cabal selects
 Fourmolu 0.17 for GHC 9.10, Fourmolu 0.18 or 0.19 for GHC 9.12, and
-Fourmolu 0.20 or newer on GHC 9.14 and newer. The current verification run uses:
+Fourmolu 0.20 or newer on GHC 9.14 and newer. The latest completed local
+verification used macOS arm64 with GHC 9.10.3. CI is configured for Ubuntu
+24.04 with GHC 9.10, 9.12, 9.14 and `latest`; remote results are not recorded
+in this checkout.
 
 ```
-Linux, GHC 9.14.1, cabal-install from the workspace image
-text-2.1.3, containers-0.8, time-1.15, fourmolu-0.21.0.0
-text-icu-0.8.0.5 (against real libicu), hedgehog-1.7
+macOS arm64, GHC 9.10.3; dependency versions are selected by Cabal
 ```
 
-Each supported compiler line has a matching Fourmolu parser branch and is
-covered by CI.
+The CI workflow defines the compiler matrix; each configured job must pass
+before that compiler line can be described as verified.
 
 Reproduce with:
 
@@ -7008,10 +7135,10 @@ sources it is generated from, in one script that CI runs unmodified.
 
 ### Current source audit
 
-The detailed filesystem and modal-editor results below are historical
-results from earlier source revisions. The current formatter change is
-verified with `cabal build all`, the full test harness, and a dedicated
-filesystem-backed save-formatting suite. The current audit corrected
+The detailed filesystem and modal-editor results below include historical
+results from earlier source revisions. The current checkout passed
+`./scripts/check.sh`, including the formatter and filesystem-backed save
+integration suite. The current audit corrected
 descriptor ownership during `fsync`,
 made file and directory sync failures visible, made hard-link inspection
 fail closed, and changed open and metadata IO failures into editor status
@@ -7019,9 +7146,10 @@ messages. Invalid UTF-8 input is opened read-only, preventing an ordinary
 save from replacing undecodable source bytes with an empty buffer.
 
 The declared scope remains a single-buffer, Unix modal editor. Haskell
-formatting now runs automatically on save for `.hs` and `.lhs` files;
-Markdown and plain text are saved unchanged. Parser-backed Haskell services
-remain unfinished work.
+formatting runs on save for `.hs` and `.lhs` files, using the nearest
+`fourmolu.yaml` or the user XDG config when found; otherwise Fourmolu defaults
+apply. Markdown and plain text are saved unchanged. Parser-backed Haskell
+services remain unfinished work.
 
 Nothing below is a stub or a "should type-check" claim; the container
 has Hackage access and every dependency is the real one.
@@ -7038,11 +7166,11 @@ has Hackage access and every dependency is the real one.
   then left out of the suite. Hedgehog was chosen over QuickCheck for
   integrated shrinking: every counterexample in this project's history
   arrived already minimised, which is what made each one diagnosable.
-- **`Basilisk-smoke`: 199 worked examples, 0 failures** — vim's
+- **`Basilisk-smoke`: 230 worked examples, 0 failures** — vim's
   vocabulary (`dw`, `3dw`, `2d3w`, `dd`, `3dd`, `dj`, `x`, `5j`, `p`,
   `o`, `u`, `:w`, `:q`, `.`, `f`, `{`, `%`, `~`, `gu`, `>>`, `r`, `ZZ`),
   the key grammar, and the Unicode and hardening cases.
-- **`Basilisk-exhaustive`: 628,452 (mode, command, document)
+- **`Basilisk-exhaustive`: 629,640 (mode, command, document)
   combinations**, forced to normal form, **0 exceptions**. The document
   fixtures include a combining sequence, an emoji ZWJ sequence, a
   regional-indicator pair, tabs, an embedded escape, a NUL and a bare
@@ -7451,8 +7579,8 @@ ten consecutive runs at that count (40,000 individual examples against
 this one law alone) before trusting it, in addition to twenty further
 runs of the full suite.
 
-All suites and the benchmarks: 39 properties, 199 worked examples,
-628,452 totality combinations, no scaling regression. A real end-to-end
+The latest local full check: 39 properties, 230 worked examples,
+629,640 totality combinations, no scaling regression. A real end-to-end
 session on the compiled binary -- `RXYZ<Esc>` then `3iab<Esc>` in one
 pty -- produced exactly the expected text.
 

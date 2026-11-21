@@ -1,39 +1,38 @@
 # Basilisk forensic quality audit and pending work
 
 **Audit date:** 2026-11-21
-**Audited checkout:** `main`, commit `68bc901` (`Add conservative Haskell live indentation`)
+**Audited checkout baseline:** `main`, commit `90f5cb5` (`Refresh product pending work roadmap`); this update records Fourmolu configuration, Darwin PTY compatibility, and expanded literate-Haskell fixtures.
 **Scope:** repository contents, architecture, file safety, CLI behavior, build and verification controls, test evidence, and user-facing documentation. This is a source-level and local verification audit, not a security certification or a full interactive terminal acceptance test.
 
 ## Executive assessment
 
-Basilisk has a coherent pure-core/IO-shell design and substantial pure-state coverage. Two recent milestones hardened external-change detection and added conservative live Haskell indentation. The save path detects content and identity changes, serializes cooperating Basilisk writers, and has targeted tests for several replacement and sync-failure cases. Existing PTY tests cover basic save/quit, formatter failure, resize, and terminal restoration.
+Basilisk has a coherent pure-core/IO-shell design and substantial pure-state coverage. Recent milestones hardened external-change detection, added conservative live Haskell indentation, and enabled project/XDG Fourmolu configuration. The save path detects content and identity changes, serializes cooperating Basilisk writers, and has targeted tests for several replacement and sync-failure cases. PTY tests cover basic save/quit, formatter failure, resize, and terminal restoration.
 
-The repository is **not yet at editor-grade completion**. The most important remaining gaps are a documented and configurable formatter policy, broader formatter fixtures for literate Haskell, unknown CLI option handling, filesystem failure coverage beyond the injected cases, and validated compiler/platform support. The partial-function scan is lexical rather than a proof. POSIX rename still cannot close the race with unrelated writers that ignore Basilisk's advisory locks.
+The repository is **not yet at editor-grade completion**. Project and user XDG Fourmolu configuration are now loaded on save, but literate-Haskell fixtures and cross-version formatter API coverage remain limited. Other gaps include unknown CLI option handling, filesystem failure coverage beyond injected cases, and validated compiler/platform support. The partial-function scan is lexical rather than a proof. POSIX rename still cannot close the race with unrelated writers that ignore Basilisk's advisory locks.
 
-This update records repository state after commits `e396c9d` and `68bc901`. No source code is changed by this report update. The separate `seby_pending_work.md` is outside this audit update.
+This audit records the code changes and local verification completed in the formatter-configuration milestone. The separate product roadmap is maintained in `seby_pending_work.md`.
 
 ## Verification evidence
 
-At this checkout, `cabal build all --enable-tests --enable-benchmarks` and
-`cabal test all --test-show-details=direct` passed on macOS arm64 with GHC
-9.10.3. The build emitted linker search-path warnings for ICU locations not
-present on this machine; no Haskell compiler warnings were reported. The
-script `./scripts/check.sh` was not run for this update, so its benchmarks,
-PTY stage, partial-function sweep, and generated-document check are not
-claimed as verified here.
+`./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3 after the formatter
+configuration tests and the Darwin PTY attribute-query fallback were added.
+This run includes build, all four test suites, the partial-function sweep,
+line-count ceiling, benchmarks, PTY checks and generated-document consistency.
 
 | Check | Result |
 |---|---:|
-| Build all components, tests and benchmarks | Passed; linker warnings noted above |
-| Haskell LOC ceiling (same lexical count as `scripts/check.sh`) | 2,402 / 3,000 |
+| Build all components, tests and benchmarks | Passed; zero warnings in check-script build |
+| Haskell LOC ceiling (same lexical count as `scripts/check.sh`) | 2,421 / 3,000 |
 | Hedgehog laws | 39 passed |
 | Smoke checks | 230 passed |
 | Exhaustive mode/command/document combinations | 629,640, zero exceptions |
 | Save-time formatter and file-write integration | Passed |
-| `git diff --check` | Passed for the implementation commits |
-| Full `scripts/check.sh`, including benchmarks and PTY | Not run at this checkout |
+| Complexity benchmarks | Passed |
+| PTY terminal regressions | Passed, including terminal attribute restoration |
+| Generated `Basilisk.md` consistency | Passed |
+| Full `scripts/check.sh` | **ALL CHECKS PASSED** |
 
-The observed local toolchain is **GHC 9.10.3 on macOS arm64**. This verifies a build and Cabal tests on that combination, but not the full PTY/check script there. `.github/workflows/ci.yml` configures Ubuntu 24.04 jobs for GHC 9.10, 9.12, 9.14 and `latest`; this report does not claim those remote jobs passed.
+The observed local toolchain is **GHC 9.10.3 on macOS arm64**. The full local check passed on that combination. `.github/workflows/ci.yml` configures Ubuntu 24.04 jobs for GHC 9.10, 9.12, 9.14 and `latest`; this report does not claim those remote jobs passed.
 
 ## Findings and remediation plan
 
@@ -62,7 +61,7 @@ Severity: **P0** means release-blocking data loss/security risk; **P1** means a 
 
 **Severity:** P2
 **Confidence:** Confirmed documentation drift.
-**Evidence:** `INSTALL.md` says macOS is untested, but the current source has now built and passed all Cabal test suites locally on macOS arm64 with GHC 9.10.3. That did not include the full PTY/check script. `.github/workflows/ci.yml` configures GHC 9.10, 9.12, 9.14 and `latest` on Ubuntu 24.04. `INSTALL.md` still lists 34 properties and 136 smoke examples; the latest local run reports 39 and 230. `Basilisk.md`/`docgen.py` still name a Linux GHC 9.14.1 verification environment and contain prior verification claims that have not been rerun at this checkout.
+**Evidence:** `INSTALL.md` now records local macOS arm64/GHC 9.10.3 verification; `.github/workflows/ci.yml` configures GHC 9.10, 9.12, 9.14 and `latest` on Ubuntu 24.04. The latest local full check reports 39 properties, 230 smoke checks and 629,640 exhaustive transitions. `Basilisk.md`/`docgen.py` contain verification history from earlier toolchains; preserve historical claims as historical and keep current verification results clearly dated. Remote CI results are not inspected here.
 
 **Impact:** Contributors can select a toolchain that has not been verified and receive misleading expectations about test coverage.
 
@@ -70,23 +69,25 @@ Severity: **P0** means release-blocking data loss/security risk; **P1** means a 
 
 **Acceptance:** One source of truth describes supported GHC versions/platforms; installation instructions work on the declared baseline; no stale test count remains.
 
-### QF-04 — Formatter policy and literate-Haskell handling need a compatibility contract
+### QF-04 — Formatter configuration is supported; literate-Haskell compatibility remains under-tested
 
 **Severity:** P1
 **Confidence:** Confirmed implementation boundaries; impact depends on user files and expected policy.
-**Evidence:** `src/Basilisk/Loop.hs:142-150` builds configuration from Fourmolu defaults and Cabal information, with no project formatter configuration passed. `src/Basilisk/Loop.hs:152-192` identifies Bird files by any line starting with `>` and LaTeX files by code-block markers, then reconstructs prose using generated marker lines. Existing `test/Formatter.hs` covers one basic Bird file, one basic LaTeX file, Cabal extensions, ordinary Haskell, Markdown, and parse failure, but not diverse literate layouts or formatter configuration discovery.
+**Status:** Fourmolu configuration discovery and error handling are implemented. `src/Basilisk/Loop.hs` uses Fourmolu's config search and YAML parser; project ancestor files take precedence over the XDG user config. Printer options, fixity overrides and re-exports are passed into the formatter. Tests cover nested project precedence, XDG fallback, a custom indentation option, malformed YAML, and refusal to write on config failure. Literate fixtures now include blank Bird code lines, CRLF and missing-final-newline input, multiple LaTeX code regions with intervening prose, and an empty `.lhs` file. A regression that changed bare Bird markers from `>` to `> ` is fixed.
+**Compatibility note:** The implementation decodes Fourmolu's exposed `Ormolu.Config.FourmoluConfig` type. Fourmolu identifies its top-level `Ormolu` module as the stable API; the configured GHC/Fourmolu matrix must catch changes to this config API.
+**Remaining evidence:** `src/Basilisk/Loop.hs` still recognizes Bird files by lines starting with `>` and LaTeX files by code-block markers, then reconstructs prose with generated marker lines. Current fixtures cover marker-like and indented prose, blank code lines, mixed endings, missing final newline, parse/config failures, complete output, and undo state. Cross-version validation remains dependent on the configured CI matrix; unusual malformed layouts and the custom reconstruction strategy still merit review.
 
 **Impact:** Save can reformat a file according to a policy different from the repository's expected policy. Unusual or malformed literate files may be misclassified, lose layout, or receive formatting that does not preserve intended structure. Since formatting is automatic on save, policy surprises are particularly costly.
 
-**Work:** Specify default and project-level policy (including whether Fourmolu configuration is honored); test configuration lookup and precedence. Build a fixture matrix for Bird/LaTeX prose, blank and indented lines, multiple code regions, marker-like source text, empty files, missing final newline, CRLF/mixed endings, and parse/config failures. Compare complete byte output and buffer/undo state. Consider using the formatter's supported literate input path rather than custom marker reconstruction if available.
+**Work:** Verify the exposed config API on every configured Fourmolu branch. Extend malformed-layout coverage and review whether Fourmolu's supported literate input path can replace custom marker reconstruction; compare complete output and buffer/undo state as the fixture set grows.
 
-**Acceptance:** Supported literate forms and configuration precedence are explicit; formatting preserves prose and file conventions in a golden fixture suite; invalid source never writes partially formatted output or marks the buffer clean.
+**Acceptance:** Project and XDG config lookup works across supported compiler branches; supported literate forms preserve prose and file conventions in a golden fixture suite; invalid source/config never writes partially formatted output or marks the buffer clean.
 
 ### QF-05 — Terminal and filesystem failure coverage is useful but incomplete
 
 **Severity:** P1
 **Confidence:** Confirmed coverage gap from test inventory; latent defects are not asserted.
-**Evidence:** `test/Terminal.py` is a real PTY harness and `scripts/check.sh` runs it. It checks write/quit, formatter failure followed by force-quit, resize, and terminal restoration for those flows. It does not cover exceptional process exits or a broad key/terminal escape-sequence matrix. `test/Formatter.hs` injects a pre-commit external edit and a post-rename directory-sync failure; it also checks timestamp-collision and path-replacement detection. The file layer additionally handles permissions, symlinks, hardlinks, fsync and rename, but these behaviors do not all have dedicated failure-injection tests. The exhaustive Haskell suite is a pure transition sweep, not terminal IO coverage.
+**Evidence:** `test/Terminal.py` is a real PTY harness and `scripts/check.sh` runs it. It checks write/quit, formatter failure followed by force-quit, resize, and terminal restoration for those flows. The harness reads terminal state from the PTY master on Darwin after the child session detaches. It does not cover exceptional process exits or a broad key/terminal escape-sequence matrix. `test/Formatter.hs` injects a pre-commit external edit and a post-rename directory-sync failure; it also checks timestamp-collision and path-replacement detection. The file layer additionally handles permissions, symlinks, hardlinks, fsync and rename, but these behaviors do not all have dedicated failure-injection tests. The exhaustive Haskell suite is a pure transition sweep, not terminal IO coverage.
 
 **Impact:** Terminal restoration, bottom-anchored status placement, resize handling, key decoding under terminal escape sequences, and failures during write/flush/rename/fsync can regress without the current checks noticing.
 
@@ -110,7 +111,7 @@ Severity: **P0** means release-blocking data loss/security risk; **P1** means a 
 
 **Severity:** P1
 **Confidence:** Confirmed gap between platform-specific code and observed validation.
-**Evidence:** `src/Basilisk/Loop.hs` imports `Graphics.Vty.Platform.Unix.mkVty`; `src/Basilisk/File.hs` uses POSIX file descriptors and `fileSynchronise`. CI is configured for Ubuntu 24.04 and four GHC selectors. A local macOS arm64 GHC 9.10.3 build and all Cabal suites passed, but the full PTY/check script was not verified there, and this report has no result for the configured remote matrix.
+**Evidence:** `src/Basilisk/Loop.hs` imports `Graphics.Vty.Platform.Unix.mkVty`; `src/Basilisk/File.hs` uses POSIX file descriptors and `fileSynchronise`. CI is configured for Ubuntu 24.04 and four GHC selectors. A local macOS arm64 GHC 9.10.3 full `scripts/check.sh` run passed. This report has no result for the configured remote matrix.
 
 **Impact:** Compiler API, dependency, terminal, or filesystem differences can break a release on an advertised or assumed platform.
 
@@ -136,13 +137,13 @@ The feature roadmap in `seby_pending_work.md` and the limitations in `Basilisk.m
 
 1. **Reliability foundation:** QF-01 is closed. Complete the remaining QF-05 IO/PTY cases; retain the current save/quit, undo and mixed-EOL invariants.
 2. **Editor interaction:** add user-requested missing modal behavior with explicit keymap contracts, PTY acceptance, and accessibility for status/error feedback. Revisit Replace-mode edge cases and count semantics.
-3. **Language experience:** close QF-04 by defining formatter configuration and literate-Haskell behavior, then add parser-backed diagnostics only after the core interaction and performance contracts are settled. Conservative live Haskell indentation was added in commit `68bc901`; it is rule-based, not parser-backed.
+3. **Language experience:** complete the literate-Haskell fixture matrix under QF-04, then add parser-backed diagnostics only after the core interaction and performance contracts are settled. Conservative live Haskell indentation was added in commit `68bc901`; it is rule-based, not parser-backed.
 4. **World-class editing:** evaluate visual selections, text objects, marks/registers, macros, substitutions/ranges, multi-buffer navigation, splits, and configuration against a coherent command model and undo history.
 5. **Performance and scale:** retain benchmark baselines, profile long-line and large-file behavior, and set explicit latency/memory budgets before optimizing.
 6. **Release engineering:** align README, INSTALL, generated architecture record, CI matrix, versioning, and release checklist; state unsupported platform and file-format boundaries plainly.
 
 ## Audit boundaries and next gate
 
-This report does not claim a complete formal audit of every key binding or every branch in the 2,402-line lexical count used by `scripts/check.sh`. The Cabal build and test suites passed locally; the complete automated script and remote CI matrix are not claimed as passing for this checkout. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
+This report does not claim a complete formal audit of every key binding or every branch in the 2,421-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3. Remote CI matrix results are not confirmed. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
 
-**Recommended next gate:** resolve the formatter contract (QF-04): decide project configuration precedence, then add golden fixtures for literate forms and failure-state behavior. QF-01 is closed. Continue QF-05's remaining filesystem and exceptional-terminal cases before release; the basic PTY harness and selected write-race/failure tests already exist.
+**Recommended next gate:** complete QF-04's remaining literate-Haskell fixture cases and verify the Fourmolu config API across the configured compiler branches. QF-01 is closed and config lookup/error behavior now has focused coverage. Continue QF-05's remaining filesystem and exceptional-terminal cases before release; the basic PTY harness and selected write-race/failure tests already exist.

@@ -2,6 +2,7 @@
 """Small end-to-end checks for the real terminal loop, using only stdlib PTYs."""
 
 import fcntl
+import errno
 import os
 import pty
 import select
@@ -72,7 +73,14 @@ class TerminalCase(unittest.TestCase):
                 output.extend(os.read(master, 65536))
             except OSError:
                 pass
-        restored = termios.tcgetattr(slave)
+        try:
+            restored = termios.tcgetattr(slave)
+        except termios.error as error:
+            # Darwin detaches the exited child session from the slave fd;
+            # the still-open PTY master retains the terminal attributes.
+            if error.args[0] != errno.ENOTTY:
+                raise
+            restored = termios.tcgetattr(master)
         os.close(slave)
         os.close(master)
         return bytes(output), os.waitstatus_to_exitcode(status), (original, restored)

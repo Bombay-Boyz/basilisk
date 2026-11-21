@@ -19,6 +19,7 @@ import Data.List (mapAccumL)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Yaml as Yaml
 import qualified Graphics.Vty as Vty
 import Graphics.Vty.Platform.Unix (mkVty)
 import Ormolu
@@ -31,7 +32,12 @@ import Ormolu
   , getCabalInfoForSourceFile
   , refineConfig
   )
-import System.FilePath (takeExtension)
+import Ormolu.Config
+  ( FourmoluConfig (..)
+  , findConfigFile
+  , resolvePrinterOpts
+  )
+import System.FilePath (takeDirectory, takeExtension)
 
 import Basilisk.Cursor (desiredColumn, unicode)
 import Basilisk.Decode (KeyState, decode, initialKeyState)
@@ -145,12 +151,29 @@ formatHaskell sourcePath source = do
 configFor :: FilePath -> IO (Config RegionIndices)
 configFor sourcePath = do
   cabalResult <- getCabalInfoForSourceFile sourcePath
+  fourmoluConfig <- loadFourmoluConfig sourcePath
   let cabalInfo = case cabalResult of
         CabalNotFound -> Nothing
         CabalDidNotMention info -> Just info
         CabalFound info -> Just info
       baseConfig = (defaultConfig :: Config RegionIndices) { cfgCheckIdempotence = True }
-  pure (refineConfig (detectSourceType sourcePath) cabalInfo Nothing Nothing baseConfig)
+      fixities = cfgFileFixities <$> fourmoluConfig
+      reexports = cfgFileReexports <$> fourmoluConfig
+      printerOptions = maybe [] (pure . cfgFilePrinterOpts) fourmoluConfig
+      refined = refineConfig (detectSourceType sourcePath) cabalInfo fixities reexports baseConfig
+  pure refined { cfgPrinterOpts = resolvePrinterOpts printerOptions }
+
+-- Fourmolu owns both the search order (nearest project ancestor, then XDG)
+-- and the YAML schema. Keep its parse errors on the existing safe-save path:
+-- formatting fails before the file writer can replace anything.
+loadFourmoluConfig :: FilePath -> IO (Maybe FourmoluConfig)
+loadFourmoluConfig sourcePath =
+  findConfigFile (takeDirectory sourcePath) >>= \case
+    Left _ -> pure Nothing
+    Right configPath -> Yaml.decodeFileEither configPath >>= \case
+      Left problem -> ioError (userError
+        ("failed to load " <> configPath <> ":\n" <> Yaml.prettyPrintParseException problem))
+      Right config -> pure (Just config)
 
 literateSource :: Text -> Maybe (Text, Map.Map Text Text, Bool)
 literateSource source
@@ -192,4 +215,4 @@ rebuildLiterate markers bird = Text.intercalate "\n" . snd . mapAccumL restore F
       | "\\begin{code}" `Text.isPrefixOf` original -> (True, original)
       | "\\end{code}" `Text.isPrefixOf` original -> (False, original)
       | otherwise -> (inside, original)
-    Nothing -> (inside, if bird then "> " <> line else line)
+    Nothing -> (inside, if bird then (if Text.null line then ">" else "> " <> line) else line)

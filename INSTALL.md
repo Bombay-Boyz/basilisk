@@ -10,7 +10,7 @@ sudo apt-get update
 sudo apt-get install -y ghc cabal-install libicu-dev
 ```
 
-**macOS** (untested — Basilisk is Unix-only but has only been run on Linux)
+**macOS** (locally verified on arm64 with GHC 9.10.3; CI currently runs on Linux)
 ```sh
 brew install ghc cabal-install icu4c pkg-config
 export PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig"
@@ -72,8 +72,8 @@ Individually, if you want them:
 
 ```sh
 cabal test                      # all four suites
-cabal run Basilisk-laws         # 34 Hedgehog properties
-cabal run Basilisk-smoke        # 136 worked examples
+cabal run Basilisk-laws         # Hedgehog property suite
+cabal run Basilisk-smoke        # worked editor examples
 cabal run Basilisk-exhaustive   # every (mode, command, document) shape
 cabal run Basilisk-formatter    # save-time Haskell formatting integration
 cabal bench                     # scaling benchmarks

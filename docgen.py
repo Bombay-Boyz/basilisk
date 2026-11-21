@@ -69,7 +69,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: ten modules, {total} lines of code. The verification
+Status, in one line: {len(MODULES)} modules, {total} lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -315,6 +315,9 @@ successful formatting change is recorded as one undoable edit and becomes
 the new saved buffer. Parse or formatter failures leave the file untouched.
 The formatter reads the matching Cabal component's language extensions
 and dependencies so parsing and operator fixities follow the project.
+It also uses Fourmolu's configuration lookup and YAML parser: the nearest
+project `fourmolu.yaml` takes precedence over the user XDG config. Invalid
+configuration prevents the write with a status message.
 The two booleans are the force-write override and `quitOnSuccess`.
 `:q` returns `RequestQuit` when the buffer is clean. `:wq` and `ZZ` set
 the write effect's `quitOnSuccess` flag; the shell requests termination
@@ -1002,9 +1005,10 @@ Tests, which do not count against the ceiling:
 
 Vimscript or Lua, a plugin framework, GUI/mouse interaction, a terminal
 emulator, session management, parser-backed diagnostics and LSP integration.
-Haskell save-time formatting and conservative live indentation are built in;
-comments and structural navigation remain future work. Markdown and plain
-text are not reformatted.
+Haskell save-time formatting and conservative live indentation are built in.
+Save formatting follows project or XDG `fourmolu.yaml` settings when present;
+without a file, it uses Fourmolu defaults. Comments and structural navigation
+remain future work. Markdown and plain text are not reformatted.
 Named registers, macros, visual mode, ex ranges and substitutions are
 also deferred. Operator text objects support words, quotes and balanced
 delimiters through @iw@/@aw@, @i"@/@a"@ and @i(@/@a(@ (with matching
@@ -1014,11 +1018,12 @@ bracket aliases), including counts and nested delimiters.
 
 # Part 3 — Code
 
-All ten modules below compile under
+All {len(MODULES)} modules below compile under
 `-Wall -Wcompat -Wincomplete-patterns -Wincomplete-uni-patterns
 -Wincomplete-record-updates -Werror=incomplete-patterns
--Wredundant-constraints -O2` with **zero warnings**, on GHC 9.14.1. Part 4
-states exactly what has been run.
+-Wredundant-constraints -O2`. The latest local zero-warning build was
+verified on macOS arm64 with GHC 9.10.3. Part 4 states exactly what has been
+run; configured remote CI outcomes are not implied.
 
 ### `Basilisk.cabal`
 
@@ -1043,16 +1048,17 @@ doc += f"""---
 
 Declared compiler compatibility starts at GHC 9.10. Cabal selects
 Fourmolu 0.17 for GHC 9.10, Fourmolu 0.18 or 0.19 for GHC 9.12, and
-Fourmolu 0.20 or newer on GHC 9.14 and newer. The current verification run uses:
+Fourmolu 0.20 or newer on GHC 9.14 and newer. The latest completed local
+verification used macOS arm64 with GHC 9.10.3. CI is configured for Ubuntu
+24.04 with GHC 9.10, 9.12, 9.14 and `latest`; remote results are not recorded
+in this checkout.
 
 ```
-Linux, GHC 9.14.1, cabal-install from the workspace image
-text-2.1.3, containers-0.8, time-1.15, fourmolu-0.21.0.0
-text-icu-0.8.0.5 (against real libicu), hedgehog-1.7
+macOS arm64, GHC 9.10.3; dependency versions are selected by Cabal
 ```
 
-Each supported compiler line has a matching Fourmolu parser branch and is
-covered by CI.
+The CI workflow defines the compiler matrix; each configured job must pass
+before that compiler line can be described as verified.
 
 Reproduce with:
 
@@ -1070,10 +1076,10 @@ sources it is generated from, in one script that CI runs unmodified.
 
 ### Current source audit
 
-The detailed filesystem and modal-editor results below are historical
-results from earlier source revisions. The current formatter change is
-verified with `cabal build all`, the full test harness, and a dedicated
-filesystem-backed save-formatting suite. The current audit corrected
+The detailed filesystem and modal-editor results below include historical
+results from earlier source revisions. The current checkout passed
+`./scripts/check.sh`, including the formatter and filesystem-backed save
+integration suite. The current audit corrected
 descriptor ownership during `fsync`,
 made file and directory sync failures visible, made hard-link inspection
 fail closed, and changed open and metadata IO failures into editor status
@@ -1081,9 +1087,10 @@ messages. Invalid UTF-8 input is opened read-only, preventing an ordinary
 save from replacing undecodable source bytes with an empty buffer.
 
 The declared scope remains a single-buffer, Unix modal editor. Haskell
-formatting now runs automatically on save for `.hs` and `.lhs` files;
-Markdown and plain text are saved unchanged. Parser-backed Haskell services
-remain unfinished work.
+formatting runs on save for `.hs` and `.lhs` files, using the nearest
+`fourmolu.yaml` or the user XDG config when found; otherwise Fourmolu defaults
+apply. Markdown and plain text are saved unchanged. Parser-backed Haskell
+services remain unfinished work.
 
 Nothing below is a stub or a "should type-check" claim; the container
 has Hackage access and every dependency is the real one.
@@ -1100,11 +1107,11 @@ has Hackage access and every dependency is the real one.
   then left out of the suite. Hedgehog was chosen over QuickCheck for
   integrated shrinking: every counterexample in this project's history
   arrived already minimised, which is what made each one diagnosable.
-- **`Basilisk-smoke`: 199 worked examples, 0 failures** — vim's
+- **`Basilisk-smoke`: 230 worked examples, 0 failures** — vim's
   vocabulary (`dw`, `3dw`, `2d3w`, `dd`, `3dd`, `dj`, `x`, `5j`, `p`,
   `o`, `u`, `:w`, `:q`, `.`, `f`, `{{`, `%`, `~`, `gu`, `>>`, `r`, `ZZ`),
   the key grammar, and the Unicode and hardening cases.
-- **`Basilisk-exhaustive`: 628,452 (mode, command, document)
+- **`Basilisk-exhaustive`: 629,640 (mode, command, document)
   combinations**, forced to normal form, **0 exceptions**. The document
   fixtures include a combining sequence, an emoji ZWJ sequence, a
   regional-indicator pair, tabs, an embedded escape, a NUL and a bare
@@ -1512,8 +1519,8 @@ ten consecutive runs at that count (40,000 individual examples against
 this one law alone) before trusting it, in addition to twenty further
 runs of the full suite.
 
-All suites and the benchmarks: 39 properties, 199 worked examples,
-628,452 totality combinations, no scaling regression. A real end-to-end
+The latest local full check: 39 properties, 230 worked examples,
+629,640 totality combinations, no scaling regression. A real end-to-end
 session on the compiled binary -- `RXYZ<Esc>` then `3iab<Esc>` in one
 pty -- produced exactly the expected text.
 

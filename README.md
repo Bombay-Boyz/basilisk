@@ -29,8 +29,10 @@ suites, the complexity benchmarks, and a check that the handoff
 document still matches the sources.
 
 Saving `.hs` and `.lhs` files formats them automatically with the built-in
-Fourmolu library. Formatting errors prevent the write; Markdown and plain
-text files are saved as written.
+Fourmolu library and the nearest project `fourmolu.yaml` (or the user XDG
+config when no project file is present).
+Formatting/configuration errors prevent the write; Markdown and plain text
+files are saved as written.
 
 ## Keys
 

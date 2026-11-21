@@ -2,7 +2,7 @@
 
 **Purpose:** the prioritized product and engineering roadmap for Basilisk/Seby.
 
-**Snapshot:** reviewed against `main` at commit `c96bd03` on 2026-11-21. External-change fingerprints and cooperating-writer locks were added in `e396c9d`; conservative live Haskell indentation was added in `68bc901`. On macOS arm64 with GHC 9.10.3, `cabal build all --enable-tests --enable-benchmarks` and all four Cabal test suites passed. The smoke suite reports 230 checks and the exhaustive transition sweep exercises 629,640 combinations. The full `scripts/check.sh` and remote CI matrix were not verified at this snapshot. CI is configured for Ubuntu 24.04 with GHC 9.10, 9.12, 9.14 and `latest`. Save-time Fourmolu formatting is implemented for `.hs` and `.lhs`; project Fourmolu configuration is not loaded. Markdown and plain text are saved unchanged and do not get live indentation.
+**Snapshot:** reviewed from `main` at `90f5cb5` on 2026-11-21; this formatter milestone adds Fourmolu configuration loading. External-change fingerprints and cooperating-writer locks were added in `e396c9d`; conservative live Haskell indentation was added in `68bc901`. On macOS arm64 with GHC 9.10.3, `./scripts/check.sh` passed, including the build, all four test suites, benchmarks, PTY terminal checks and generated-doc consistency. The smoke suite reports 230 checks and the exhaustive transition sweep exercises 629,640 combinations. The remote CI matrix was not verified at this snapshot. CI is configured for Ubuntu 24.04 with GHC 9.10, 9.12, 9.14 and `latest`. Save-time Fourmolu formatting is implemented for `.hs` and `.lhs`; project and XDG `fourmolu.yaml` settings are loaded. Markdown and plain text are saved unchanged and do not get live indentation.
 
 This is a work plan, not a claim that the items below already exist. Mark an item done only after its acceptance criteria pass and the architecture handoff is updated.
 
@@ -28,10 +28,10 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ### P0.1 Verify the advertised compiler and dependency support
 
-**Status:** CI matrix configured; full matrix results remain unverified in this audit. A local GHC 9.10.3/macOS build and Cabal test run passed.
+**Status:** CI matrix configured; remote matrix results remain unverified in this audit. The full local `scripts/check.sh` passed on GHC 9.10.3/macOS arm64.
 
 - Build and run the full check script across every supported GHC release line starting at 9.10.
-- Verify both conditional Fourmolu dependency branches and their public `Ormolu` API usage.
+- Verify both conditional Fourmolu dependency branches and the `Ormolu.Config.FourmoluConfig` API used for YAML loading; the top-level `Ormolu` module is the stable API.
 - Review the `allow-newer: hpc` workaround in `cabal.project`. Keep it only if the GHC 9.14 package metadata mismatch still requires it; scope it to the narrowest supported condition and document why.
 - The CI matrix is configured in `.github/workflows/ci.yml` for Ubuntu 24.04 and GHC 9.10, 9.12, 9.14 and `latest`. Confirm successful runs for each line and retain a clean package-cache job. The matrix invokes `scripts/check.sh` for build, test suites, benchmarks, the partial-function sweep, PTY tests, and generated-document consistency.
 - Make the declared support range match what CI actually verifies. Do not imply Windows support while the executable imports the Unix Vty backend.
@@ -40,13 +40,13 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ### P0.2 Harden save-time formatting as a data-integrity boundary
 
-**Status:** Core behavior and several failure cases are tested; the formatter policy and fixture matrix remain open. `test/Formatter.hs` covers Cabal extensions, basic Bird and LaTeX literate files, Markdown passthrough, parse failure, post-format undo, stale fingerprints, path replacement, a pre-commit external edit, and post-rename sync failure.
+**Status:** Core behavior, project/XDG config loading, and several failure cases are tested; the literate-format fixture matrix remains open. `test/Formatter.hs` covers Cabal extensions, custom printer indentation, nearest project config precedence, XDG fallback, malformed config refusal, basic Bird and LaTeX literate files, Markdown passthrough, parse failure, post-format undo, stale fingerprints, path replacement, a pre-commit external edit, and post-rename sync failure.
 
 - Test saves through `:w`, `:w!`, `:wq`, and `ZZ`, including success, parse failure, stale-file refusal, read-only files, and write failure.
 - Verify that formatter failure never changes disk contents, never marks the buffer clean, and never quits after `:wq` or `ZZ`.
 - Verify that a successful format updates the in-memory document, preserves the final-newline choice and line-ending policy, keeps the cursor on a sensible nearby location, creates one undoable change, and makes the resulting buffer clean only after the write succeeds.
 - Expand `.hs`, Bird `.lhs`, and LaTeX `.lhs` fixtures to cover prose, comments, language pragmas, CPP, blank/indented rows, multiple code regions, marker-like source text, mixed line endings, and malformed input. Preserve literate prose byte-for-byte where feasible; explicitly reject unsupported constructs without writing.
-- Honor Cabal component language extensions and dependencies. Decide whether `fourmolu.yaml` is an intentionally unsupported project setting or should be loaded through a stable public API. Do not silently claim compatibility with settings the formatter ignores.
+- Honor Cabal component language extensions and dependencies. Project ancestor and XDG `fourmolu.yaml` files are loaded through Fourmolu's config API; verify the exposed config type across every supported Fourmolu branch and document that precedence.
 - Improve formatter diagnostics shown in the status line: retain source path and location, avoid dumping unbounded multi-line exception text into the single-line UI, and keep enough detail available for review.
 - Test formatter idempotence and semantic preservation against representative project fixtures, including custom fixities and comments around imports and declarations.
 
@@ -157,8 +157,8 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ### P2.4 Evolve the formatter intentionally
 
-- Choose and publish one default Fourmolu style, including indentation width and line width.
-- Decide whether project `.fourmolu.yaml` options are supported. If supported, load them through a stable API and test malformed, missing, and inherited configuration. If not, clearly state that formatting uses Seby’s fixed built-in profile.
+- Choose and publish the no-config Fourmolu style, including indentation width and line width.
+- Verify project and XDG config loading across supported Fourmolu branches. The current code uses the exposed `Ormolu.Config.FourmoluConfig` parser type; ensure the compiler matrix catches API changes. Keep malformed config failures safe and visible. Current literate fixtures cover Bird and LaTeX basics, blank Bird code lines, CRLF without a final newline, multiple LaTeX code blocks, and empty `.lhs` files; extend with mixed endings, marker-like code/prose, indented prose, and buffer/undo assertions.
 - Add fixtures for package-level extensions, custom fixities, local modules, imports, CPP limitations, literate code, comments, and syntax errors.
 - Keep formatting failure-safe and measure latency on large modules. If formatting is too slow for the interactive save path, show progress or provide cancellation without writing unformatted bytes silently.
 
@@ -249,7 +249,7 @@ Work in this order unless a measured user problem justifies reordering. P0 work 
 
 ## Suggested first sequence
 
-1. Define the formatter configuration policy and precedence, then expand literate-Haskell golden fixtures and failure-state assertions.
+1. Continue the literate-Haskell golden fixture matrix with malformed-layout and formatter API compatibility cases; current tests cover config precedence, parse/config failure safety, Bird and LaTeX regions, mixed line endings, missing final newline, empty files, and undo behavior. Verify project/XDG config behavior across supported Fourmolu versions.
 2. Capture the configured GHC CI matrix results; check the `hpc` bound workaround and reconcile compiler/platform claims in README, INSTALL and `Basilisk.md`.
 3. Fill the remaining deterministic filesystem failure and exceptional-terminal cases under P0.2/P0.4.
 4. Implement Visual mode and reuse the existing span semantics.
