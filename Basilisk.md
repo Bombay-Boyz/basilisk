@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: ten modules, 2131 lines of code. The verification
+Status, in one line: ten modules, 2276 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -466,11 +466,14 @@ leak: every edit retains a whole document, and structural sharing does
 not stop a long session growing without limit. Vim bounds the same
 stack with `'undolevels'`.
 
-**Staleness is detected.** If the file changed since it was read -- a
-rebase, a formatter, another editor -- writing would silently discard
-someone else's work. `:w` refuses and says so; `:w!` overrides. The
-stamp is modification time and size together, because either alone is
-too coarse.
+**Staleness is detected.** The save fingerprint includes file identity,
+high-resolution modification and change times, size, and a SHA-256
+content digest. Saves recheck that fingerprint immediately before
+commit, and Basilisk writers serialize through per-user advisory locks
+(including hardlink aliases). `:w` refuses a detected change; `:w!`
+overrides it. A non-cooperating program can still write in the tiny
+interval between the final check and the filesystem commit; portable
+POSIX rename does not provide compare-and-swap replacement.
 
 The pure core records these decisions and the shell acts on them: `save`
 carries the user's `!` and the conditional-quit policy into `WriteFile`;
@@ -928,19 +931,19 @@ prototype, measured, before adoption.
 |---|---|---|---|
 | `Basilisk.Document` | zipper, coordinates, the reach algebra | 756 | 1341 |
 | `Basilisk.Cursor` | the sticky column, ICU display width | 89 | 165 |
-| `Basilisk.Types` | modes, tagged commands, effects, editor | 240 | 413 |
+| `Basilisk.Types` | modes, tagged commands, effects, editor | 248 | 422 |
 | `Basilisk.Step` | the pure transition function | 297 | 536 |
 | `Basilisk.Decode` | vim's key grammar, as a Mealy machine | 199 | 303 |
 | `Basilisk.Render` | viewport, frame, status line | 82 | 130 |
 | `Basilisk.Syntax` | Haskell and Markdown lexical highlighting | 91 | 107 |
-| `Basilisk.File` | open and write, encoding-safe | 170 | 274 |
-| `Basilisk.Loop` | the IO shell and save-time formatting | 160 | 192 |
+| `Basilisk.File` | open and write, encoding-safe | 305 | 425 |
+| `Basilisk.Loop` | the IO shell and save-time formatting | 162 | 195 |
 | `Main` | argument parsing | 47 | 55 |
-| **Total** | | **2131** | |
+| **Total** | | **2276** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **2131 lines against a 3,000 ceiling**, leaving 869
+specified — is **2276 lines against a 3,000 ceiling**, leaving 724
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -954,7 +957,7 @@ Tests, which do not count against the ceiling:
 | `test/Gen.hs` | Unicode-hostile generators | 135 | 186 |
 | `test/Smoke.hs` | worked examples, in vim's vocabulary | 507 | 577 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
-| `test/Formatter.hs` | save-time Haskell formatter integration | 70 | 75 |
+| `test/Formatter.hs` | save-time Haskell formatter integration | 138 | 143 |
 
 ## 2.14 Deliberately out of scope for v1
 
@@ -1022,6 +1025,7 @@ library
       base        >=4.20 && <5
     , bytestring  >=0.11 && <0.13
     , containers  >=0.6  && <0.9
+    , cryptohash-sha256 >=0.11 && <0.12
     , deepseq     >=1.4  && <1.6
     , directory   >=1.3  && <1.4
     , filepath    >=1.4  && <1.6
@@ -1074,7 +1078,7 @@ test-suite Basilisk-formatter
   type:               exitcode-stdio-1.0
   hs-source-dirs:     test
   main-is:            Formatter.hs
-  build-depends:      base, text, directory, filepath, temporary, Basilisk
+  build-depends:      base, text, directory, filepath, temporary, unix, Basilisk
 
 -- Totality sweep: every (mode, command, document) shape, forced to
 -- normal form, checked only for freedom from exceptions.
@@ -2646,7 +2650,7 @@ module Basilisk.Types
   , Clip (..)
   , History (..)
   , Eol (..)
-  , Stamp
+  , Stamp (..)
   , modified
   , Buffer (..)
   , Editor (..)
@@ -2674,6 +2678,7 @@ module Basilisk.Types
   ) where
 
 import Control.DeepSeq (NFData)
+import qualified Data.ByteString as ByteString
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import Data.Sequence (ViewL (..))
@@ -2852,10 +2857,18 @@ encodeEol LF   = id
 encodeEol CRLF = Text.replace "\n" "\r\n"
 encodeEol CR   = Text.replace "\n" "\r"
 
--- | A file's modification time in nanoseconds together with its size.
--- Either alone is too coarse to detect a rewrite: filesystems round
--- timestamps, and a same-size edit is the common case.
-type Stamp = (Integer, Integer)
+-- | A file fingerprint used to detect edits made outside the editor.
+-- Times and size make common comparisons cheap to inspect; device and
+-- inode detect replacement at the same path; the digest catches content
+-- changes even when metadata collides or is restored.
+data Stamp = Stamp
+  { stampDevice :: !Integer
+  , stampFileId :: !Integer
+  , stampModified :: !Integer
+  , stampChanged :: !Integer
+  , stampSize :: !Integer
+  , stampDigest :: !ByteString.ByteString
+  } deriving (Eq, Show, Generic, NFData)
 
 -- | How many document snapshots the undo stack keeps.
 --
@@ -4138,36 +4151,75 @@ symbol c = c `elem` (":!#$%&*+./<=>?@\\^|-~" :: String)
 module Basilisk.File
   ( openFile
   , writeDocument
+  , writeDocumentWith
   , stampOf
+  , WriteResult (..)
   ) where
 
 import Control.Exception (IOException, bracket, bracketOnError, try)
+import Data.Bits ((.&.))
 import qualified Data.ByteString as ByteString
 import Data.Foldable (traverse_)
+import Data.List (nub, sort)
+import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Text.Encoding (decodeUtf8', encodeUtf8)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import qualified Crypto.Hash.SHA256 as SHA256
 import System.Directory
   ( doesFileExist
-  , getFileSize
-  , getModificationTime
+  , createDirectoryIfMissing
   , copyPermissions
   , canonicalizePath
+  , makeAbsolute
+  , getAppUserDataDirectory
   , getPermissions
   , removeFile
   , renameFile
   , writable
   )
-import System.FilePath (takeDirectory, takeFileName)
+import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
 import System.Info (os)
-import System.IO (Handle, IOMode (WriteMode), hClose, hFlush, openBinaryFile)
-import System.Posix.Files (getFileStatus, linkCount)
-import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, handleToFd, openFd)
+import System.IO (Handle, IOMode (WriteMode), SeekMode (AbsoluteSeek), hClose, hFlush, openBinaryFile)
+import System.Posix.Files
+  ( FileStatus
+  , deviceID
+  , fileID
+  , fileMode
+  , fileOwner
+  , fileSize
+  , getFileStatus
+  , getSymbolicLinkStatus
+  , isDirectory
+  , isRegularFile
+  , linkCount
+  , modificationTimeHiRes
+  , setFileMode
+  , statusChangeTimeHiRes
+  )
+import System.Posix.IO
+  ( LockRequest (WriteLock)
+  , OpenFileFlags (creat, nofollow)
+  , OpenMode (ReadOnly, ReadWrite)
+  , closeFd
+  , defaultFileFlags
+  , handleToFd
+  , openFd
+  , waitToSetLock
+  )
 import System.Posix.Unistd (fileSynchronise)
+import System.Posix.User (getEffectiveUserID)
+import System.Posix.Types (FileOffset)
 import System.IO.Temp (openBinaryTempFile)
 
 import Basilisk.Types
+
+-- | A completed replacement and any durability or stamp warning that
+-- happened after the destination was already changed.
+data WriteResult = WriteResult
+  { writtenStamp :: !(Maybe Stamp)
+  , writeWarning :: !(Maybe Text)
+  }
 
 -- | Reads bytes and decodes explicitly. @Data.Text.IO@ would translate
 -- newlines per platform and throw on invalid UTF-8; the first silently
@@ -4181,9 +4233,11 @@ openFile :: FilePath -> IO Editor
 openFile fp = do
   opened <- tryIO $ do
     present <- doesFileExist fp
-    mark <- stampOf fp
     canWrite <- if present then writable' fp else canCreate fp
     contents <- if present then Just <$> ByteString.readFile fp else pure Nothing
+    mark <- case contents of
+      Nothing -> pure Nothing
+      Just bytes -> Just <$> stampBytes fp bytes
     pure (mark, canWrite, contents)
   case opened of
     Left err -> pure ((fresh "" platformEol) { status = Just (Text.pack ("open failed: " <> show err)) })
@@ -4266,18 +4320,48 @@ tryIO = try
 platformEol :: Eol
 platformEol = if os == "mingw32" then CRLF else LF
 
--- | Modification time and size together. Either alone is too coarse:
--- filesystems round timestamps, and a same-size rewrite is common.
--- 'Nothing' means the file does not exist.
+-- | A fingerprint of both file contents and identity. The metadata
+-- detects replacement and cheaply describes a change; SHA-256 ensures a
+-- same-size rewrite is detected even when timestamps collide. 'Nothing'
+-- means the file does not exist.
 stampOf :: FilePath -> IO (Maybe Stamp)
-stampOf p = do
-  present <- doesFileExist p
-  if not present
-    then pure Nothing
-    else do
-      t <- getModificationTime p
-      n <- getFileSize p
-      pure (Just (truncate (toRational (utcTimeToPOSIXSeconds t) * 1000000000), n))
+stampOf p = inspect (3 :: Int)
+  where
+    inspect attempts = do
+      present <- doesFileExist p
+      if not present
+        then pure Nothing
+        else do
+          before <- getFileStatus p
+          bytes <- ByteString.readFile p
+          after <- getFileStatus p
+          if stableMetadata before after && toInteger (fileSize after) == toInteger (ByteString.length bytes)
+            then pure (Just (stampStatus after bytes))
+            else if attempts > 1
+              then inspect (attempts - 1)
+              else ioError (userError "file kept changing while its save fingerprint was read")
+
+stampBytes :: FilePath -> ByteString.ByteString -> IO Stamp
+stampBytes p bytes = stampStatus <$> getFileStatus p <*> pure bytes
+
+stampStatus :: FileStatus -> ByteString.ByteString -> Stamp
+stampStatus status bytes = Stamp
+  { stampDevice = toInteger (deviceID status)
+  , stampFileId = toInteger (fileID status)
+  , stampModified = nanos (modificationTimeHiRes status)
+  , stampChanged = nanos (statusChangeTimeHiRes status)
+  , stampSize = toInteger (fileSize status)
+  , stampDigest = SHA256.hash bytes
+  }
+  where nanos = truncate . (* 1000000000) . toRational
+
+stableMetadata :: FileStatus -> FileStatus -> Bool
+stableMetadata a b =
+  deviceID a == deviceID b
+    && fileID a == fileID b
+    && modificationTimeHiRes a == modificationTimeHiRes b
+    && statusChangeTimeHiRes a == statusChangeTimeHiRes b
+    && fileSize a == fileSize b
 
 -- | The interpreter for the 'WriteFile' effect. The bytes arrive
 -- already line-ending encoded from "Basilisk.Step", so nothing here
@@ -4295,34 +4379,105 @@ stampOf p = do
 --     and never a half-written one. The naive @writeFile@ truncates in
 --     place, where the same interruption destroys the original.
 --
--- Returns the stamp the buffer should now carry, so the caller does not
--- have to re-stat and race with itself.
-writeDocument :: FilePath -> Text -> Bool -> Maybe Stamp -> IO (Either Text (Maybe Stamp))
-writeDocument given t force expected = either describe id <$> attempt
+-- Returns the observed stamp and any warning raised after replacement.
+-- Once rename succeeds, a later directory-sync or stat failure cannot
+-- truthfully be reported as though the file were left untouched.
+writeDocument :: FilePath -> Text -> Bool -> Maybe Stamp -> IO (Either Text WriteResult)
+writeDocument = writeDocumentWith syncDir (const (pure ()))
+
+-- | Both hooks are injected for deterministic durability and race tests.
+-- Production callers use 'writeDocument'.
+writeDocumentWith :: (FilePath -> IO ()) -> (FilePath -> IO ()) -> FilePath -> Text -> Bool -> Maybe Stamp -> IO (Either Text WriteResult)
+writeDocumentWith syncDirectory beforeCommit given t force expected = either describe id <$> attempt
   where
-    attempt :: IO (Either IOException (Either Text (Maybe Stamp)))
+    attempt :: IO (Either IOException (Either Text WriteResult))
     attempt = try $ do
       -- Write through a symlink, not over it. 'renameFile' replaces
       -- whatever name it is given, so writing to a symlinked path
       -- would silently turn the link into a regular file and leave the
       -- real file untouched -- the edit lost, with a "written"
       -- message. Resolving first is the whole fix.
-      p     <- resolve given
-      found <- stampOf p
-      if not force && diverged expected found
-        then pure (Left "file changed on disk (:w! to override)")
-        else do
-          shared <- isShared p
-          if shared then inPlace p (encodeUtf8 t) else atomically p (encodeUtf8 t)
-          Right <$> stampOf p
+      p <- resolve given
+      withSaveLock p [expected] $ do
+        found <- stampOf p
+        if not force && diverged expected found
+          then pure (Left "file changed on disk (:w! to override)")
+          else do
+            shared <- isShared p
+            committed <-
+              if shared
+                then do
+                  beforeCommit p
+                  stillCurrent <- current p
+                  if not stillCurrent
+                    then pure (Left "file changed on disk (:w! to override)")
+                    else inPlace p (encodeUtf8 t) >> pure (Right Nothing)
+                else atomically syncDirectory beforeCommit p (encodeUtf8 t) force expected
+            case committed of
+              Left why -> pure (Left why)
+              Right durabilityWarning -> do
+                observed <- tryIO (stampOf p)
+                let (mark, stampWarning) = case observed of
+                      Right value -> (value, Nothing)
+                      Left err -> (Nothing, Just ("file was written but its new stamp could not be read: " <> Text.pack (show err)))
+                pure . Right $ WriteResult mark (combineWarnings durabilityWarning stampWarning)
     describe e = Left (Text.pack ("write failed: " <> show (ioKind e)))
     ioKind = takeWhile (/= '\n') . show
+    combineWarnings (Just first) (Just second) = Just (first <> "; " <> second)
+    combineWarnings warning Nothing = warning
+    combineWarnings Nothing warning = warning
+    current p = do
+      found <- stampOf p
+      pure (force || not (diverged expected found))
 
 -- | The real file behind a path, or the path itself if it cannot be
 -- resolved (which is the normal case for a file that does not exist
 -- yet, and must not be an error).
 resolve :: FilePath -> IO FilePath
-resolve p = either (const p) id <$> tryIO (canonicalizePath p)
+resolve p = do
+  absolute <- normalise <$> makeAbsolute p
+  resolved <- tryIO (canonicalizePath absolute)
+  case resolved of
+    Right target -> pure target
+    Left _ -> do
+      parent <- tryIO (canonicalizePath (takeDirectory absolute))
+      pure $ case parent of
+        Right directory -> normalise (directory </> takeFileName absolute)
+        Left _ -> absolute
+
+-- | Persistent advisory locks serialize Basilisk writers by path and
+-- inode, so aliases to a hardlinked file share a lock too. The lock lives
+-- in a private per-user directory rather than beside edited files, and
+-- the OS releases it automatically if a process exits unexpectedly.
+withSaveLock :: FilePath -> [Maybe Stamp] -> IO a -> IO a
+withSaveLock target fingerprints action = do
+  appData <- getAppUserDataDirectory "basilisk"
+  let lockDir = appData </> "locks"
+      lockPath = lockDir </> "writes.lock"
+      ranges = sort . nub $ map lockOffset lockKeys
+  createDirectoryIfMissing True lockDir
+  owner <- getEffectiveUserID
+  dirStatus <- getSymbolicLinkStatus lockDir
+  if not (isDirectory dirStatus) || fileOwner dirStatus /= owner
+    then ioError (userError "Basilisk save-lock directory is not a private directory owned by this user")
+    else do
+      setFileMode lockDir 0o700
+      bracket
+        (openFd lockPath ReadWrite (defaultFileFlags { creat = Just 0o600, nofollow = True }))
+        closeFd
+        (\fd -> do
+          lockStatus <- getFileStatus lockPath
+          if not (isRegularFile lockStatus) || fileOwner lockStatus /= owner || fileMode lockStatus .&. 0o077 /= 0
+            then ioError (userError "Basilisk save-lock file has unsafe ownership or permissions")
+            else do
+              traverse_ (\offset -> waitToSetLock fd (WriteLock, AbsoluteSeek, offset, 1)) ranges
+              action)
+  where
+    lockKeys = "path:" <> target : map identityKey (catMaybes fingerprints)
+    identityKey stamp' = "inode:" <> show (stampDevice stamp') <> ":" <> show (stampFileId stamp')
+    lockOffset :: String -> FileOffset
+    lockOffset key = fromIntegral (foldl step 0 (take 7 (ByteString.unpack (SHA256.hash (encodeUtf8 (Text.pack key))))) :: Integer)
+      where step value byte = value * 256 + toInteger byte
 
 -- | Whether other names refer to this same inode. 'renameFile' would
 -- break them, leaving the other names holding the old contents, so a
@@ -4363,10 +4518,10 @@ diverged (Just a) (Just b) = a /= b
 -- owner's bits, so a group-readable or group-writable file would come
 -- back owner-only -- which a round trip through the editor must not
 -- do, and which this project did until it was measured.
-atomically :: FilePath -> ByteString.ByteString -> IO ()
-atomically p bytes = do
+atomically :: (FilePath -> IO ()) -> (FilePath -> IO ()) -> FilePath -> ByteString.ByteString -> Bool -> Maybe Stamp -> IO (Either Text (Maybe Text))
+atomically syncDirectory beforeCommit p bytes force expected = do
   present <- doesFileExist p
-  bracketOnError
+  bracket
     (openBinaryTempFile (takeDirectory p) (takeFileName p <> ".basilisk"))
     cleanupTemp
     (\(tmp, h) -> do
@@ -4374,8 +4529,17 @@ atomically p bytes = do
         flushToDisk h
         traverse_ (const (copyPermissions p tmp)) (guard' present)
         syncFile tmp
-        renameFile tmp p
-        syncDir (takeDirectory p))
+        beforeCommit p
+        latest <- stampOf p
+        if not force && diverged expected latest
+          then pure (Left "file changed on disk (:w! to override)")
+          else do
+            renameFile tmp p
+            synced <- tryIO (syncDirectory (takeDirectory p))
+            let warning = case synced of
+                  Right () -> Nothing
+                  Left err -> Just ("file was written but directory sync failed: " <> Text.pack (show err))
+            pure (Right warning))
   where guard' b = if b then Just () else Nothing
 
 cleanupTemp :: (FilePath, Handle) -> IO ()
@@ -4420,7 +4584,7 @@ syncDir d = go
 -- the first keystroke, and what makes a terminal resize repaint: the
 -- size is re-read every iteration, so a resize needs no event handling,
 -- no 'Resize' action and no special case anywhere.
-module Basilisk.Loop (run, perform) where
+module Basilisk.Loop (run, perform, performWith) where
 
 import Control.Exception (AsyncException, SomeException, bracket, displayException, evaluate, fromException, tryJust)
 import Control.Monad (foldM)
@@ -4483,21 +4647,24 @@ loop vty !ks !e = do
 -- records the stamp the writer observed rather than re-stat'ing and
 -- racing with itself. The quit bit is honored only after that success.
 perform :: (Editor, Bool) -> Effect -> IO (Editor, Bool)
-perform (e, quitRequested) (WriteFile p t forceWrite quitOnSuccess) = do
+perform = performWith File.writeDocument
+
+performWith :: (FilePath -> Text -> Bool -> Maybe Stamp -> IO (Either Text File.WriteResult)) -> (Editor, Bool) -> Effect -> IO (Editor, Bool)
+performWith writer (e, quitRequested) (WriteFile p t forceWrite quitOnSuccess) = do
   formatted <- formatForSave p t e
   case formatted of
     Left why -> pure (e { status = Just ("format failed: " <> why) }, quitRequested)
     Right (prepared, output) -> do
-      result <- File.writeDocument p output forceWrite (stamp e)
+      result <- writer p output forceWrite (stamp e)
       pure $ case result of
         Left why -> (e { status = Just why }, quitRequested)
-        Right mark ->
-          ( (onBuffer (\b -> b { bSaved = bVersion b, bStamp = mark }) prepared)
-              { status = Just "written"
+        Right outcome ->
+          ( (onBuffer (\b -> b { bSaved = bVersion b, bStamp = File.writtenStamp outcome }) prepared)
+              { status = Just (maybe "written" ("written; " <>) (File.writeWarning outcome))
               }
           , quitRequested || quitOnSuccess
           )
-perform (e, _) RequestQuit = pure (e, True)
+performWith _ (e, _) RequestQuit = pure (e, True)
 
 formatForSave :: FilePath -> Text -> Editor -> IO (Either Text (Editor, Text))
 formatForSave p original e
@@ -6485,12 +6652,14 @@ module Main (main) where
 import Control.Monad (unless)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, renameFile)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Posix.Files (accessTimeHiRes, getFileStatus, modificationTimeHiRes, setFileTimesHiRes)
 
 import Basilisk.Document qualified as Doc
-import Basilisk.Loop (perform)
+import Basilisk.File qualified as File
+import Basilisk.Loop (perform, performWith)
 import Basilisk.Step (step)
 import Basilisk.Types
 
@@ -6502,6 +6671,11 @@ main = do
         latex = dir </> "Latex.lhs"
         markdown = dir </> "notes.md"
         broken = dir </> "Broken.hs"
+        syncFailure = dir </> "sync-failure.txt"
+        sameTime = dir </> "same-time.txt"
+        replacedPath = dir </> "replaced.txt"
+        replacement = dir </> "replacement.tmp"
+        raced = dir </> "raced.txt"
         editor file source = newEditor (Just file) source
         write file source = perform (editor file source, False) (WriteFile file source False False)
         writeQuit file source = perform (editor file source, False) (WriteFile file source False True)
@@ -6548,6 +6722,67 @@ main = do
       ( not exists
           && not quitRequested
           && maybe False (Text.isPrefixOf "format failed:") (status rejected)
+      )
+    Text.writeFile sameTime "alpha"
+    oldSameTimeStamp <- File.stampOf sameTime
+    oldSameTimeStatus <- getFileStatus sameTime
+    Text.writeFile sameTime "omega"
+    setFileTimesHiRes sameTime (accessTimeHiRes oldSameTimeStatus) (modificationTimeHiRes oldSameTimeStatus)
+    newSameTimeStatus <- getFileStatus sameTime
+    newSameTimeStamp <- File.stampOf sameTime
+    sameTimeResult <- File.writeDocument sameTime "editor" False oldSameTimeStamp
+    sameTimeContents <- Text.readFile sameTime
+    check
+      "same-size edits with the original modification time are refused by the content fingerprint"
+      ( modificationTimeHiRes oldSameTimeStatus == modificationTimeHiRes newSameTimeStatus
+          && maybe False (\(old, new) -> stampSize old == stampSize new && stampModified old == stampModified new && stampDigest old /= stampDigest new) ((,) <$> oldSameTimeStamp <*> newSameTimeStamp)
+          && either (Text.isPrefixOf "file changed on disk") (const False) sameTimeResult
+          && sameTimeContents == "omega"
+      )
+    Text.writeFile replacedPath "alpha"
+    oldReplacementStamp <- File.stampOf replacedPath
+    Text.writeFile replacement "alpha"
+    replacementStatus <- getFileStatus replacement
+    setFileTimesHiRes replacement (accessTimeHiRes replacementStatus) (modificationTimeHiRes replacementStatus)
+    renameFile replacement replacedPath
+    replacementResult <- File.writeDocument replacedPath "editor" False oldReplacementStamp
+    replacementContents <- Text.readFile replacedPath
+    newReplacementStamp <- File.stampOf replacedPath
+    check
+      "replacing a file at the same path is detected and preserved"
+      ( maybe False (\(old, new) -> stampDevice old == stampDevice new && stampFileId old /= stampFileId new) ((,) <$> oldReplacementStamp <*> newReplacementStamp)
+          && either (Text.isPrefixOf "file changed on disk") (const False) replacementResult
+          && replacementContents == "alpha"
+      )
+    Text.writeFile raced "before"
+    raceStamp <- File.stampOf raced
+    raceResult <-
+      File.writeDocumentWith
+        (const (pure ()))
+        (\_ -> Text.writeFile raced "outside")
+        raced
+        "inside"
+        False
+        raceStamp
+    raceContents <- Text.readFile raced
+    check
+      "a change during temporary-file preparation is caught at the final pre-commit check"
+      ( either (Text.isPrefixOf "file changed on disk") (const False) raceResult
+          && raceContents == "outside"
+      )
+    (afterSyncFailure, quitAfterSyncFailure) <-
+      performWith
+        (File.writeDocumentWith (\_ -> ioError (userError "injected sync failure")) (const (pure ())))
+        (editor syncFailure "committed content", False)
+        (WriteFile syncFailure "committed content" False True)
+    committedBytes <- Text.readFile syncFailure
+    check
+      "post-rename directory-sync failure reports the committed write and cleans the buffer"
+      ( committedBytes == "committed content"
+          && not (modified afterSyncFailure)
+          && stamp afterSyncFailure /= Nothing
+          && quitAfterSyncFailure
+          && maybe False (Text.isPrefixOf "written; file was written but directory sync failed:") (status afterSyncFailure)
       )
   putStrLn "Haskell save formatter integration checks passed."
 

@@ -10,7 +10,7 @@
 -- the first keystroke, and what makes a terminal resize repaint: the
 -- size is re-read every iteration, so a resize needs no event handling,
 -- no 'Resize' action and no special case anywhere.
-module Basilisk.Loop (run, perform) where
+module Basilisk.Loop (run, perform, performWith) where
 
 import Control.Exception (AsyncException, SomeException, bracket, displayException, evaluate, fromException, tryJust)
 import Control.Monad (foldM)
@@ -73,21 +73,24 @@ loop vty !ks !e = do
 -- records the stamp the writer observed rather than re-stat'ing and
 -- racing with itself. The quit bit is honored only after that success.
 perform :: (Editor, Bool) -> Effect -> IO (Editor, Bool)
-perform (e, quitRequested) (WriteFile p t forceWrite quitOnSuccess) = do
+perform = performWith File.writeDocument
+
+performWith :: (FilePath -> Text -> Bool -> Maybe Stamp -> IO (Either Text File.WriteResult)) -> (Editor, Bool) -> Effect -> IO (Editor, Bool)
+performWith writer (e, quitRequested) (WriteFile p t forceWrite quitOnSuccess) = do
   formatted <- formatForSave p t e
   case formatted of
     Left why -> pure (e { status = Just ("format failed: " <> why) }, quitRequested)
     Right (prepared, output) -> do
-      result <- File.writeDocument p output forceWrite (stamp e)
+      result <- writer p output forceWrite (stamp e)
       pure $ case result of
         Left why -> (e { status = Just why }, quitRequested)
-        Right mark ->
-          ( (onBuffer (\b -> b { bSaved = bVersion b, bStamp = mark }) prepared)
-              { status = Just "written"
+        Right outcome ->
+          ( (onBuffer (\b -> b { bSaved = bVersion b, bStamp = File.writtenStamp outcome }) prepared)
+              { status = Just (maybe "written" ("written; " <>) (File.writeWarning outcome))
               }
           , quitRequested || quitOnSuccess
           )
-perform (e, _) RequestQuit = pure (e, True)
+performWith _ (e, _) RequestQuit = pure (e, True)
 
 formatForSave :: FilePath -> Text -> Editor -> IO (Either Text (Editor, Text))
 formatForSave p original e

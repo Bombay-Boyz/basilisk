@@ -518,11 +518,14 @@ leak: every edit retains a whole document, and structural sharing does
 not stop a long session growing without limit. Vim bounds the same
 stack with `'undolevels'`.
 
-**Staleness is detected.** If the file changed since it was read -- a
-rebase, a formatter, another editor -- writing would silently discard
-someone else's work. `:w` refuses and says so; `:w!` overrides. The
-stamp is modification time and size together, because either alone is
-too coarse.
+**Staleness is detected.** The save fingerprint includes file identity,
+high-resolution modification and change times, size, and a SHA-256
+content digest. Saves recheck that fingerprint immediately before
+commit, and Basilisk writers serialize through per-user advisory locks
+(including hardlink aliases). `:w` refuses a detected change; `:w!`
+overrides it. A non-cooperating program can still write in the tiny
+interval between the final check and the filesystem commit; portable
+POSIX rename does not provide compare-and-swap replacement.
 
 The pure core records these decisions and the shell acts on them: `save`
 carries the user's `!` and the conditional-quit policy into `WriteFile`;

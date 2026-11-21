@@ -52,7 +52,10 @@ Counts prefix a command and multiply: `3dw`, `5j`, `2d3w`.
 - `:q` refuses to discard unsaved changes; `:q!` overrides.
 - Writes are atomic — a crash or a full disk leaves the old file or the
   new one, never half of either.
-- Writing over a file that changed on disk is refused; `:w!` overrides.
+- Writes compare file identity and content, recheck just before commit,
+  and serialize other Basilisk saves. `:w` refuses detected changes;
+  `:w!` overrides. A program that ignores Basilisk's lock can still race
+  the final filesystem commit.
 - Symlinks are followed rather than replaced, hardlinks keep their
   links, and file modes survive a save.
 - Line endings (LF, CRLF, CR) and a missing final newline round-trip

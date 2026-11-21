@@ -5,12 +5,14 @@ module Main (main) where
 import Control.Monad (unless)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, renameFile)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Posix.Files (accessTimeHiRes, getFileStatus, modificationTimeHiRes, setFileTimesHiRes)
 
 import Basilisk.Document qualified as Doc
-import Basilisk.Loop (perform)
+import Basilisk.File qualified as File
+import Basilisk.Loop (perform, performWith)
 import Basilisk.Step (step)
 import Basilisk.Types
 
@@ -22,6 +24,11 @@ main = do
         latex = dir </> "Latex.lhs"
         markdown = dir </> "notes.md"
         broken = dir </> "Broken.hs"
+        syncFailure = dir </> "sync-failure.txt"
+        sameTime = dir </> "same-time.txt"
+        replacedPath = dir </> "replaced.txt"
+        replacement = dir </> "replacement.tmp"
+        raced = dir </> "raced.txt"
         editor file source = newEditor (Just file) source
         write file source = perform (editor file source, False) (WriteFile file source False False)
         writeQuit file source = perform (editor file source, False) (WriteFile file source False True)
@@ -68,6 +75,67 @@ main = do
       ( not exists
           && not quitRequested
           && maybe False (Text.isPrefixOf "format failed:") (status rejected)
+      )
+    Text.writeFile sameTime "alpha"
+    oldSameTimeStamp <- File.stampOf sameTime
+    oldSameTimeStatus <- getFileStatus sameTime
+    Text.writeFile sameTime "omega"
+    setFileTimesHiRes sameTime (accessTimeHiRes oldSameTimeStatus) (modificationTimeHiRes oldSameTimeStatus)
+    newSameTimeStatus <- getFileStatus sameTime
+    newSameTimeStamp <- File.stampOf sameTime
+    sameTimeResult <- File.writeDocument sameTime "editor" False oldSameTimeStamp
+    sameTimeContents <- Text.readFile sameTime
+    check
+      "same-size edits with the original modification time are refused by the content fingerprint"
+      ( modificationTimeHiRes oldSameTimeStatus == modificationTimeHiRes newSameTimeStatus
+          && maybe False (\(old, new) -> stampSize old == stampSize new && stampModified old == stampModified new && stampDigest old /= stampDigest new) ((,) <$> oldSameTimeStamp <*> newSameTimeStamp)
+          && either (Text.isPrefixOf "file changed on disk") (const False) sameTimeResult
+          && sameTimeContents == "omega"
+      )
+    Text.writeFile replacedPath "alpha"
+    oldReplacementStamp <- File.stampOf replacedPath
+    Text.writeFile replacement "alpha"
+    replacementStatus <- getFileStatus replacement
+    setFileTimesHiRes replacement (accessTimeHiRes replacementStatus) (modificationTimeHiRes replacementStatus)
+    renameFile replacement replacedPath
+    replacementResult <- File.writeDocument replacedPath "editor" False oldReplacementStamp
+    replacementContents <- Text.readFile replacedPath
+    newReplacementStamp <- File.stampOf replacedPath
+    check
+      "replacing a file at the same path is detected and preserved"
+      ( maybe False (\(old, new) -> stampDevice old == stampDevice new && stampFileId old /= stampFileId new) ((,) <$> oldReplacementStamp <*> newReplacementStamp)
+          && either (Text.isPrefixOf "file changed on disk") (const False) replacementResult
+          && replacementContents == "alpha"
+      )
+    Text.writeFile raced "before"
+    raceStamp <- File.stampOf raced
+    raceResult <-
+      File.writeDocumentWith
+        (const (pure ()))
+        (\_ -> Text.writeFile raced "outside")
+        raced
+        "inside"
+        False
+        raceStamp
+    raceContents <- Text.readFile raced
+    check
+      "a change during temporary-file preparation is caught at the final pre-commit check"
+      ( either (Text.isPrefixOf "file changed on disk") (const False) raceResult
+          && raceContents == "outside"
+      )
+    (afterSyncFailure, quitAfterSyncFailure) <-
+      performWith
+        (File.writeDocumentWith (\_ -> ioError (userError "injected sync failure")) (const (pure ())))
+        (editor syncFailure "committed content", False)
+        (WriteFile syncFailure "committed content" False True)
+    committedBytes <- Text.readFile syncFailure
+    check
+      "post-rename directory-sync failure reports the committed write and cleans the buffer"
+      ( committedBytes == "committed content"
+          && not (modified afterSyncFailure)
+          && stamp afterSyncFailure /= Nothing
+          && quitAfterSyncFailure
+          && maybe False (Text.isPrefixOf "written; file was written but directory sync failed:") (status afterSyncFailure)
       )
   putStrLn "Haskell save formatter integration checks passed."
 

@@ -7,36 +7,75 @@
 module Basilisk.File
   ( openFile
   , writeDocument
+  , writeDocumentWith
   , stampOf
+  , WriteResult (..)
   ) where
 
 import Control.Exception (IOException, bracket, bracketOnError, try)
+import Data.Bits ((.&.))
 import qualified Data.ByteString as ByteString
 import Data.Foldable (traverse_)
+import Data.List (nub, sort)
+import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Text.Encoding (decodeUtf8', encodeUtf8)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import qualified Crypto.Hash.SHA256 as SHA256
 import System.Directory
   ( doesFileExist
-  , getFileSize
-  , getModificationTime
+  , createDirectoryIfMissing
   , copyPermissions
   , canonicalizePath
+  , makeAbsolute
+  , getAppUserDataDirectory
   , getPermissions
   , removeFile
   , renameFile
   , writable
   )
-import System.FilePath (takeDirectory, takeFileName)
+import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
 import System.Info (os)
-import System.IO (Handle, IOMode (WriteMode), hClose, hFlush, openBinaryFile)
-import System.Posix.Files (getFileStatus, linkCount)
-import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, handleToFd, openFd)
+import System.IO (Handle, IOMode (WriteMode), SeekMode (AbsoluteSeek), hClose, hFlush, openBinaryFile)
+import System.Posix.Files
+  ( FileStatus
+  , deviceID
+  , fileID
+  , fileMode
+  , fileOwner
+  , fileSize
+  , getFileStatus
+  , getSymbolicLinkStatus
+  , isDirectory
+  , isRegularFile
+  , linkCount
+  , modificationTimeHiRes
+  , setFileMode
+  , statusChangeTimeHiRes
+  )
+import System.Posix.IO
+  ( LockRequest (WriteLock)
+  , OpenFileFlags (creat, nofollow)
+  , OpenMode (ReadOnly, ReadWrite)
+  , closeFd
+  , defaultFileFlags
+  , handleToFd
+  , openFd
+  , waitToSetLock
+  )
 import System.Posix.Unistd (fileSynchronise)
+import System.Posix.User (getEffectiveUserID)
+import System.Posix.Types (FileOffset)
 import System.IO.Temp (openBinaryTempFile)
 
 import Basilisk.Types
+
+-- | A completed replacement and any durability or stamp warning that
+-- happened after the destination was already changed.
+data WriteResult = WriteResult
+  { writtenStamp :: !(Maybe Stamp)
+  , writeWarning :: !(Maybe Text)
+  }
 
 -- | Reads bytes and decodes explicitly. @Data.Text.IO@ would translate
 -- newlines per platform and throw on invalid UTF-8; the first silently
@@ -50,9 +89,11 @@ openFile :: FilePath -> IO Editor
 openFile fp = do
   opened <- tryIO $ do
     present <- doesFileExist fp
-    mark <- stampOf fp
     canWrite <- if present then writable' fp else canCreate fp
     contents <- if present then Just <$> ByteString.readFile fp else pure Nothing
+    mark <- case contents of
+      Nothing -> pure Nothing
+      Just bytes -> Just <$> stampBytes fp bytes
     pure (mark, canWrite, contents)
   case opened of
     Left err -> pure ((fresh "" platformEol) { status = Just (Text.pack ("open failed: " <> show err)) })
@@ -135,18 +176,48 @@ tryIO = try
 platformEol :: Eol
 platformEol = if os == "mingw32" then CRLF else LF
 
--- | Modification time and size together. Either alone is too coarse:
--- filesystems round timestamps, and a same-size rewrite is common.
--- 'Nothing' means the file does not exist.
+-- | A fingerprint of both file contents and identity. The metadata
+-- detects replacement and cheaply describes a change; SHA-256 ensures a
+-- same-size rewrite is detected even when timestamps collide. 'Nothing'
+-- means the file does not exist.
 stampOf :: FilePath -> IO (Maybe Stamp)
-stampOf p = do
-  present <- doesFileExist p
-  if not present
-    then pure Nothing
-    else do
-      t <- getModificationTime p
-      n <- getFileSize p
-      pure (Just (truncate (toRational (utcTimeToPOSIXSeconds t) * 1000000000), n))
+stampOf p = inspect (3 :: Int)
+  where
+    inspect attempts = do
+      present <- doesFileExist p
+      if not present
+        then pure Nothing
+        else do
+          before <- getFileStatus p
+          bytes <- ByteString.readFile p
+          after <- getFileStatus p
+          if stableMetadata before after && toInteger (fileSize after) == toInteger (ByteString.length bytes)
+            then pure (Just (stampStatus after bytes))
+            else if attempts > 1
+              then inspect (attempts - 1)
+              else ioError (userError "file kept changing while its save fingerprint was read")
+
+stampBytes :: FilePath -> ByteString.ByteString -> IO Stamp
+stampBytes p bytes = stampStatus <$> getFileStatus p <*> pure bytes
+
+stampStatus :: FileStatus -> ByteString.ByteString -> Stamp
+stampStatus status bytes = Stamp
+  { stampDevice = toInteger (deviceID status)
+  , stampFileId = toInteger (fileID status)
+  , stampModified = nanos (modificationTimeHiRes status)
+  , stampChanged = nanos (statusChangeTimeHiRes status)
+  , stampSize = toInteger (fileSize status)
+  , stampDigest = SHA256.hash bytes
+  }
+  where nanos = truncate . (* 1000000000) . toRational
+
+stableMetadata :: FileStatus -> FileStatus -> Bool
+stableMetadata a b =
+  deviceID a == deviceID b
+    && fileID a == fileID b
+    && modificationTimeHiRes a == modificationTimeHiRes b
+    && statusChangeTimeHiRes a == statusChangeTimeHiRes b
+    && fileSize a == fileSize b
 
 -- | The interpreter for the 'WriteFile' effect. The bytes arrive
 -- already line-ending encoded from "Basilisk.Step", so nothing here
@@ -164,34 +235,105 @@ stampOf p = do
 --     and never a half-written one. The naive @writeFile@ truncates in
 --     place, where the same interruption destroys the original.
 --
--- Returns the stamp the buffer should now carry, so the caller does not
--- have to re-stat and race with itself.
-writeDocument :: FilePath -> Text -> Bool -> Maybe Stamp -> IO (Either Text (Maybe Stamp))
-writeDocument given t force expected = either describe id <$> attempt
+-- Returns the observed stamp and any warning raised after replacement.
+-- Once rename succeeds, a later directory-sync or stat failure cannot
+-- truthfully be reported as though the file were left untouched.
+writeDocument :: FilePath -> Text -> Bool -> Maybe Stamp -> IO (Either Text WriteResult)
+writeDocument = writeDocumentWith syncDir (const (pure ()))
+
+-- | Both hooks are injected for deterministic durability and race tests.
+-- Production callers use 'writeDocument'.
+writeDocumentWith :: (FilePath -> IO ()) -> (FilePath -> IO ()) -> FilePath -> Text -> Bool -> Maybe Stamp -> IO (Either Text WriteResult)
+writeDocumentWith syncDirectory beforeCommit given t force expected = either describe id <$> attempt
   where
-    attempt :: IO (Either IOException (Either Text (Maybe Stamp)))
+    attempt :: IO (Either IOException (Either Text WriteResult))
     attempt = try $ do
       -- Write through a symlink, not over it. 'renameFile' replaces
       -- whatever name it is given, so writing to a symlinked path
       -- would silently turn the link into a regular file and leave the
       -- real file untouched -- the edit lost, with a "written"
       -- message. Resolving first is the whole fix.
-      p     <- resolve given
-      found <- stampOf p
-      if not force && diverged expected found
-        then pure (Left "file changed on disk (:w! to override)")
-        else do
-          shared <- isShared p
-          if shared then inPlace p (encodeUtf8 t) else atomically p (encodeUtf8 t)
-          Right <$> stampOf p
+      p <- resolve given
+      withSaveLock p [expected] $ do
+        found <- stampOf p
+        if not force && diverged expected found
+          then pure (Left "file changed on disk (:w! to override)")
+          else do
+            shared <- isShared p
+            committed <-
+              if shared
+                then do
+                  beforeCommit p
+                  stillCurrent <- current p
+                  if not stillCurrent
+                    then pure (Left "file changed on disk (:w! to override)")
+                    else inPlace p (encodeUtf8 t) >> pure (Right Nothing)
+                else atomically syncDirectory beforeCommit p (encodeUtf8 t) force expected
+            case committed of
+              Left why -> pure (Left why)
+              Right durabilityWarning -> do
+                observed <- tryIO (stampOf p)
+                let (mark, stampWarning) = case observed of
+                      Right value -> (value, Nothing)
+                      Left err -> (Nothing, Just ("file was written but its new stamp could not be read: " <> Text.pack (show err)))
+                pure . Right $ WriteResult mark (combineWarnings durabilityWarning stampWarning)
     describe e = Left (Text.pack ("write failed: " <> show (ioKind e)))
     ioKind = takeWhile (/= '\n') . show
+    combineWarnings (Just first) (Just second) = Just (first <> "; " <> second)
+    combineWarnings warning Nothing = warning
+    combineWarnings Nothing warning = warning
+    current p = do
+      found <- stampOf p
+      pure (force || not (diverged expected found))
 
 -- | The real file behind a path, or the path itself if it cannot be
 -- resolved (which is the normal case for a file that does not exist
 -- yet, and must not be an error).
 resolve :: FilePath -> IO FilePath
-resolve p = either (const p) id <$> tryIO (canonicalizePath p)
+resolve p = do
+  absolute <- normalise <$> makeAbsolute p
+  resolved <- tryIO (canonicalizePath absolute)
+  case resolved of
+    Right target -> pure target
+    Left _ -> do
+      parent <- tryIO (canonicalizePath (takeDirectory absolute))
+      pure $ case parent of
+        Right directory -> normalise (directory </> takeFileName absolute)
+        Left _ -> absolute
+
+-- | Persistent advisory locks serialize Basilisk writers by path and
+-- inode, so aliases to a hardlinked file share a lock too. The lock lives
+-- in a private per-user directory rather than beside edited files, and
+-- the OS releases it automatically if a process exits unexpectedly.
+withSaveLock :: FilePath -> [Maybe Stamp] -> IO a -> IO a
+withSaveLock target fingerprints action = do
+  appData <- getAppUserDataDirectory "basilisk"
+  let lockDir = appData </> "locks"
+      lockPath = lockDir </> "writes.lock"
+      ranges = sort . nub $ map lockOffset lockKeys
+  createDirectoryIfMissing True lockDir
+  owner <- getEffectiveUserID
+  dirStatus <- getSymbolicLinkStatus lockDir
+  if not (isDirectory dirStatus) || fileOwner dirStatus /= owner
+    then ioError (userError "Basilisk save-lock directory is not a private directory owned by this user")
+    else do
+      setFileMode lockDir 0o700
+      bracket
+        (openFd lockPath ReadWrite (defaultFileFlags { creat = Just 0o600, nofollow = True }))
+        closeFd
+        (\fd -> do
+          lockStatus <- getFileStatus lockPath
+          if not (isRegularFile lockStatus) || fileOwner lockStatus /= owner || fileMode lockStatus .&. 0o077 /= 0
+            then ioError (userError "Basilisk save-lock file has unsafe ownership or permissions")
+            else do
+              traverse_ (\offset -> waitToSetLock fd (WriteLock, AbsoluteSeek, offset, 1)) ranges
+              action)
+  where
+    lockKeys = "path:" <> target : map identityKey (catMaybes fingerprints)
+    identityKey stamp' = "inode:" <> show (stampDevice stamp') <> ":" <> show (stampFileId stamp')
+    lockOffset :: String -> FileOffset
+    lockOffset key = fromIntegral (foldl step 0 (take 7 (ByteString.unpack (SHA256.hash (encodeUtf8 (Text.pack key))))) :: Integer)
+      where step value byte = value * 256 + toInteger byte
 
 -- | Whether other names refer to this same inode. 'renameFile' would
 -- break them, leaving the other names holding the old contents, so a
@@ -232,10 +374,10 @@ diverged (Just a) (Just b) = a /= b
 -- owner's bits, so a group-readable or group-writable file would come
 -- back owner-only -- which a round trip through the editor must not
 -- do, and which this project did until it was measured.
-atomically :: FilePath -> ByteString.ByteString -> IO ()
-atomically p bytes = do
+atomically :: (FilePath -> IO ()) -> (FilePath -> IO ()) -> FilePath -> ByteString.ByteString -> Bool -> Maybe Stamp -> IO (Either Text (Maybe Text))
+atomically syncDirectory beforeCommit p bytes force expected = do
   present <- doesFileExist p
-  bracketOnError
+  bracket
     (openBinaryTempFile (takeDirectory p) (takeFileName p <> ".basilisk"))
     cleanupTemp
     (\(tmp, h) -> do
@@ -243,8 +385,17 @@ atomically p bytes = do
         flushToDisk h
         traverse_ (const (copyPermissions p tmp)) (guard' present)
         syncFile tmp
-        renameFile tmp p
-        syncDir (takeDirectory p))
+        beforeCommit p
+        latest <- stampOf p
+        if not force && diverged expected latest
+          then pure (Left "file changed on disk (:w! to override)")
+          else do
+            renameFile tmp p
+            synced <- tryIO (syncDirectory (takeDirectory p))
+            let warning = case synced of
+                  Right () -> Nothing
+                  Left err -> Just ("file was written but directory sync failed: " <> Text.pack (show err))
+            pure (Right warning))
   where guard' b = if b then Just () else Nothing
 
 cleanupTemp :: (FilePath, Handle) -> IO ()

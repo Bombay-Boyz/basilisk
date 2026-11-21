@@ -34,23 +34,12 @@ The observed toolchain was **GHC 9.14.1**. The run does not establish compatibil
 
 Severity: **P0** means release-blocking data loss/security risk; **P1** means a core reliability or compatibility risk; **P2** means a meaningful usability, quality-control, or documentation gap; **P3** means polish or longer-term capability. Confidence distinguishes a directly demonstrated repository fact from a plausible risk requiring additional reproduction.
 
-### QF-01 — External-change detection can miss edits and has a check/write race
+### QF-01 — External-change detection and cooperating-writer races — addressed
 
-**Severity:** P1
-**Confidence:** Confirmed design limitation; exploitability depends on filesystem timing and concurrent writers.
-**Evidence:** `src/Basilisk/File.hs:138-149` records only modification time and size. `src/Basilisk/File.hs:179-185` checks the stamp and later replaces or truncates the file. A same-size rewrite with a preserved or colliding timestamp can compare equal. Another process can also write after `stampOf` and before `renameFile`/`inPlace`; the stale check and mutation are not one atomic operation.
+**Status:** Addressed in the current source tree.
+**Evidence:** `src/Basilisk/Types.hs` records device, inode, high-resolution modification/change times, size, and SHA-256 content digest. `src/Basilisk/File.hs` serializes Basilisk writers with per-user advisory byte-range locks keyed by path and inode, then rechecks the fingerprint after writing the temporary file and before replacement. Hardlink aliases share the inode lock. `test/Formatter.hs` covers same-size content changes with preserved mtime, path replacement, an external edit during temporary-file preparation, and post-rename sync failure.
 
-**Impact:** A save can overwrite another writer's content even though the editor advertises stale-write refusal. Atomic rename protects against partial writes, but does not serialize concurrent writers or close the check-to-write window.
-
-**Work:**
-
-1. Define the exact conflict guarantee across supported filesystems; distinguish best-effort detection from locking/serialization.
-2. Strengthen the fingerprint (for example, include a content digest and stable file identity) and verify it immediately before replacement. Ensure the chosen method has a clear cost for large files.
-3. For hardlinks, document and test the narrower guarantees; consider advisory locking or a revalidation strategy that respects inode identity.
-4. Add deterministic tests for same-size/same-mtime modifications, replacement of the path, deletion/recreation, and a writer racing between validation and commit. Use controlled hooks rather than timing-only flaky tests.
-5. Correct the user-facing guarantee in `README.md` and `Basilisk.md` to match the implemented guarantee.
-
-**Acceptance:** A save never silently overwrites an external modification within the explicitly supported concurrency model; conflict cases are reproducibly covered, and documentation states any unavoidable platform limitation.
+**Concurrency contract:** Basilisk instances serialize writes to the same path or inode. Changes visible at the final fingerprint check are refused unless `:w!` is used. POSIX rename has no portable compare-and-swap operation, and advisory locks do not constrain unrelated programs, so a non-cooperating writer can still race the final check-to-commit interval. This limit is stated in `README.md` and the generated `Basilisk.md`.
 
 ### QF-02 — CLI silently accepts unknown options
 

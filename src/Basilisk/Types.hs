@@ -29,7 +29,7 @@ module Basilisk.Types
   , Clip (..)
   , History (..)
   , Eol (..)
-  , Stamp
+  , Stamp (..)
   , modified
   , Buffer (..)
   , Editor (..)
@@ -57,6 +57,7 @@ module Basilisk.Types
   ) where
 
 import Control.DeepSeq (NFData)
+import qualified Data.ByteString as ByteString
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import Data.Sequence (ViewL (..))
@@ -235,10 +236,18 @@ encodeEol LF   = id
 encodeEol CRLF = Text.replace "\n" "\r\n"
 encodeEol CR   = Text.replace "\n" "\r"
 
--- | A file's modification time in nanoseconds together with its size.
--- Either alone is too coarse to detect a rewrite: filesystems round
--- timestamps, and a same-size edit is the common case.
-type Stamp = (Integer, Integer)
+-- | A file fingerprint used to detect edits made outside the editor.
+-- Times and size make common comparisons cheap to inspect; device and
+-- inode detect replacement at the same path; the digest catches content
+-- changes even when metadata collides or is restored.
+data Stamp = Stamp
+  { stampDevice :: !Integer
+  , stampFileId :: !Integer
+  , stampModified :: !Integer
+  , stampChanged :: !Integer
+  , stampSize :: !Integer
+  , stampDigest :: !ByteString.ByteString
+  } deriving (Eq, Show, Generic, NFData)
 
 -- | How many document snapshots the undo stack keeps.
 --
