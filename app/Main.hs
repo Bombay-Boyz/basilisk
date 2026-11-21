@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Argument handling, and nothing else. Anything that is not a flag
--- is the file to edit.
+-- | Argument handling, and nothing else. Reject unknown options and pass
+-- one positional path to the editor.
 module Main (main) where
 
 import Data.Version (showVersion)
@@ -16,27 +16,48 @@ main :: IO ()
 main = getArgs >>= dispatch
 
 dispatch :: [String] -> IO ()
-dispatch args
-  | any (`elem` ["-h", "--help"]) args    = usage >>= putStrLn >> exitSuccess
-  | any (`elem` ["-v", "--version"]) args = putStrLn ("basilisk " <> showVersion version) >> exitSuccess
-  | otherwise = case filter (not . isFlag) args of
-      []    -> run Nothing
-      [f]   -> run (Just f)
-      _ : _ -> do
-        hPutStrLn stderr "basilisk: one file at a time; multiple buffers are not implemented"
-        exitFailure
-  where isFlag a = take 1 a == "-" && a /= "-"
+dispatch args = case parseArguments args of
+  Left problem -> hPutStrLn stderr ("basilisk: " <> problem) >> exitFailure
+  Right ShowHelp -> usage >>= putStrLn >> exitSuccess
+  Right ShowVersion -> putStrLn ("basilisk " <> showVersion version) >> exitSuccess
+  Right (Edit path) -> run path
+
+data Action = ShowHelp | ShowVersion | Edit (Maybe FilePath)
+
+parseArguments :: [String] -> Either String Action
+parseArguments ["-h"] = Right ShowHelp
+parseArguments ["--help"] = Right ShowHelp
+parseArguments ["-v"] = Right ShowVersion
+parseArguments ["--version"] = Right ShowVersion
+parseArguments args = do
+  paths <- collect False [] args
+  case paths of
+    [] -> Right (Edit Nothing)
+    [path] -> Right (Edit (Just path))
+    _ -> Left "one file at a time; multiple buffers are not implemented"
+ where
+  collect _ paths [] = Right (reverse paths)
+  collect True paths remaining = Right (reverse paths <> remaining)
+  collect False paths ("--" : remaining) = collect True paths remaining
+  collect False paths (arg : remaining)
+    | arg `elem` ["-h", "--help", "-v", "--version"] =
+        Left (arg <> " must be used by itself")
+    | isOption arg = Left ("unknown option: " <> arg)
+    | otherwise = collect False (arg : paths) remaining
+  isOption arg = take 1 arg == "-" && arg /= "-"
 
 usage :: IO String
 usage = do
   me <- getProgName
   pure (unlines
     [ "usage: " <> me <> " [file]"
+    , "       " <> me <> " -- [file]"
     , ""
     , "A modal terminal text editor for Haskell, in Haskell."
     , ""
     , "  -h, --help     show this and exit"
     , "  -v, --version  show the version and exit"
+    , "  --             end options (for a filename beginning with -)"
     , ""
     , "keys"
     , "  motions    h j k l  w b e  W B  0 ^ $  gg G"

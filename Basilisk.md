@@ -16,7 +16,7 @@ implement a design this project has already abandoned.
 compiled source tree at build time.** The document and the code cannot
 diverge, because the document does not contain a second copy of the code.
 
-Status, in one line: 11 modules, 2421 lines of code. The verification
+Status, in one line: 11 modules, 2440 lines of code. The verification
 results below are historical results from the last recorded full run; they
 are not a claim that the current checkout has just been built or tested.
 The current source audit is recorded in the latest revision notes.
@@ -942,12 +942,12 @@ prototype, measured, before adoption.
 | `Basilisk.Indent` | Haskell live indentation | 91 | 117 |
 | `Basilisk.File` | open and write, encoding-safe | 305 | 425 |
 | `Basilisk.Loop` | the IO shell and save-time formatting | 181 | 218 |
-| `Main` | argument parsing | 47 | 55 |
-| **Total** | | **2421** | |
+| `Main` | argument parsing | 66 | 76 |
+| **Total** | | **2440** | |
 
 Non-comment lines, blank and `--`-only lines stripped. The complete
 editor — including the four modules the previous revision had only
-specified — is **2421 lines against a 3,000 ceiling**, leaving 579
+specified — is **2440 lines against a 3,000 ceiling**, leaving 560
 for the Haskell-structural-navigation milestone. The previous revision
 budgeted ~1,120 for the same scope with four modules unwritten; the
 reduction is not compression but the design changes in 2.4a, 2.4b, 2.4d and
@@ -4967,8 +4967,8 @@ rebuildLiterate markers bird = Text.intercalate "\n" . snd . mapAccumL restore F
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Argument handling, and nothing else. Anything that is not a flag
--- is the file to edit.
+-- | Argument handling, and nothing else. Reject unknown options and pass
+-- one positional path to the editor.
 module Main (main) where
 
 import Data.Version (showVersion)
@@ -4983,27 +4983,48 @@ main :: IO ()
 main = getArgs >>= dispatch
 
 dispatch :: [String] -> IO ()
-dispatch args
-  | any (`elem` ["-h", "--help"]) args    = usage >>= putStrLn >> exitSuccess
-  | any (`elem` ["-v", "--version"]) args = putStrLn ("basilisk " <> showVersion version) >> exitSuccess
-  | otherwise = case filter (not . isFlag) args of
-      []    -> run Nothing
-      [f]   -> run (Just f)
-      _ : _ -> do
-        hPutStrLn stderr "basilisk: one file at a time; multiple buffers are not implemented"
-        exitFailure
-  where isFlag a = take 1 a == "-" && a /= "-"
+dispatch args = case parseArguments args of
+  Left problem -> hPutStrLn stderr ("basilisk: " <> problem) >> exitFailure
+  Right ShowHelp -> usage >>= putStrLn >> exitSuccess
+  Right ShowVersion -> putStrLn ("basilisk " <> showVersion version) >> exitSuccess
+  Right (Edit path) -> run path
+
+data Action = ShowHelp | ShowVersion | Edit (Maybe FilePath)
+
+parseArguments :: [String] -> Either String Action
+parseArguments ["-h"] = Right ShowHelp
+parseArguments ["--help"] = Right ShowHelp
+parseArguments ["-v"] = Right ShowVersion
+parseArguments ["--version"] = Right ShowVersion
+parseArguments args = do
+  paths <- collect False [] args
+  case paths of
+    [] -> Right (Edit Nothing)
+    [path] -> Right (Edit (Just path))
+    _ -> Left "one file at a time; multiple buffers are not implemented"
+ where
+  collect _ paths [] = Right (reverse paths)
+  collect True paths remaining = Right (reverse paths <> remaining)
+  collect False paths ("--" : remaining) = collect True paths remaining
+  collect False paths (arg : remaining)
+    | arg `elem` ["-h", "--help", "-v", "--version"] =
+        Left (arg <> " must be used by itself")
+    | isOption arg = Left ("unknown option: " <> arg)
+    | otherwise = collect False (arg : paths) remaining
+  isOption arg = take 1 arg == "-" && arg /= "-"
 
 usage :: IO String
 usage = do
   me <- getProgName
   pure (unlines
     [ "usage: " <> me <> " [file]"
+    , "       " <> me <> " -- [file]"
     , ""
     , "A modal terminal text editor for Haskell, in Haskell."
     , ""
     , "  -h, --help     show this and exit"
     , "  -v, --version  show the version and exit"
+    , "  --             end options (for a filename beginning with -)"
     , ""
     , "keys"
     , "  motions    h j k l  w b e  W B  0 ^ $  gg G"
@@ -5077,7 +5098,7 @@ fi
 step "PTY terminal regressions"
 if command -v python3 >/dev/null && exe=$(cabal list-bin exe:Basilisk 2>/dev/null); then
   if python3 test/Terminal.py "$exe" >/tmp/terminal.log 2>&1; then
-    ok "startup, mode/status placement, save/quit, formatter error, resize, cleanup"
+    ok "CLI arguments, startup, mode/status placement, save/quit, formatter error, resize, cleanup"
   else
     cat /tmp/terminal.log; bad "PTY terminal regressions"
   fi
@@ -7144,6 +7165,9 @@ made file and directory sync failures visible, made hard-link inspection
 fail closed, and changed open and metadata IO failures into editor status
 messages. Invalid UTF-8 input is opened read-only, preventing an ordinary
 save from replacing undecodable source bytes with an empty buffer.
+The executable-level PTY checks also cover standalone help/version flags,
+unknown options, multiple paths, no-argument startup, and `--` for a
+leading-dash filename.
 
 The declared scope remains a single-buffer, Unix modal editor. Haskell
 formatting runs on save for `.hs` and `.lhs` files, using the nearest

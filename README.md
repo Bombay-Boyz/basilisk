@@ -34,6 +34,10 @@ config when no project file is present).
 Formatting/configuration errors prevent the write; Markdown and plain text
 files are saved as written.
 
+The command line accepts one file path. Unknown options fail with a
+diagnostic; use `--` before a filename that starts with `-`. `--help` and
+`--version` (also `-h` and `-v`) are standalone options.
+
 ## Keys
 
 | | |

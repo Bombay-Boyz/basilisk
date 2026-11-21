@@ -1085,6 +1085,9 @@ made file and directory sync failures visible, made hard-link inspection
 fail closed, and changed open and metadata IO failures into editor status
 messages. Invalid UTF-8 input is opened read-only, preventing an ordinary
 save from replacing undecodable source bytes with an empty buffer.
+The executable-level PTY checks also cover standalone help/version flags,
+unknown options, multiple paths, no-argument startup, and `--` for a
+leading-dash filename.
 
 The declared scope remains a single-buffer, Unix modal editor. Haskell
 formatting runs on save for `.hs` and `.lhs` files, using the nearest

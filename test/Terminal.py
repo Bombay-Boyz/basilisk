@@ -7,6 +7,7 @@ import os
 import pty
 import select
 import signal
+import subprocess
 import struct
 import termios
 import tempfile
@@ -17,7 +18,7 @@ import unittest
 class TerminalCase(unittest.TestCase):
     executable = None
 
-    def run_editor(self, path, keys, initial_size=(10, 50), resize=None):
+    def run_editor(self, path, keys, initial_size=(10, 50), resize=None, arguments=None, cwd=None):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", *initial_size, 0, 0))
         original = termios.tcgetattr(slave)
@@ -26,10 +27,13 @@ class TerminalCase(unittest.TestCase):
             try:
                 os.setsid()
                 fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+                if cwd is not None:
+                    os.chdir(cwd)
                 for fd in (0, 1, 2):
                     os.dup2(slave, fd)
                 os.environ.update(TERM="xterm-256color", LANG="C.UTF-8")
-                os.execv(self.executable, [self.executable, path])
+                argv = [self.executable] + (arguments if arguments is not None else [path])
+                os.execv(self.executable, argv)
             finally:
                 os._exit(127)
         output = bytearray()
@@ -84,6 +88,59 @@ class TerminalCase(unittest.TestCase):
         os.close(slave)
         os.close(master)
         return bytes(output), os.waitstatus_to_exitcode(status), (original, restored)
+
+    def test_cli_help_version_unknown_options_and_multiple_paths(self):
+        help_result = subprocess.run([self.executable, "--help"], capture_output=True, text=True, timeout=5)
+        self.assertEqual(help_result.returncode, 0)
+        self.assertIn("usage:", help_result.stdout)
+        self.assertIn("-- [file]", help_result.stdout)
+        short_help = subprocess.run([self.executable, "-h"], capture_output=True, text=True, timeout=5)
+        self.assertEqual(short_help.returncode, 0)
+        self.assertIn("usage:", short_help.stdout)
+
+        version_result = subprocess.run([self.executable, "--version"], capture_output=True, text=True, timeout=5)
+        self.assertEqual(version_result.returncode, 0)
+        self.assertRegex(version_result.stdout, r"^basilisk \d+\.\d+\.\d+\.\d+\n$")
+        short_version = subprocess.run([self.executable, "-v"], capture_output=True, text=True, timeout=5)
+        self.assertEqual(short_version.returncode, 0)
+        self.assertEqual(short_version.stdout, version_result.stdout)
+
+        unknown_result = subprocess.run([self.executable, "--typo"], capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(unknown_result.returncode, 0)
+        self.assertIn("unknown option: --typo", unknown_result.stderr)
+        unknown_with_path = subprocess.run(
+            [self.executable, "--typo", "one.hs"], capture_output=True, text=True, timeout=5
+        )
+        self.assertNotEqual(unknown_with_path.returncode, 0)
+        self.assertIn("unknown option: --typo", unknown_with_path.stderr)
+
+        multiple_result = subprocess.run([self.executable, "one.hs", "two.hs"], capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(multiple_result.returncode, 0)
+        self.assertIn("one file at a time", multiple_result.stderr)
+
+        mixed_help_result = subprocess.run([self.executable, "--help", "one.hs"], capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(mixed_help_result.returncode, 0)
+        self.assertIn("--help must be used by itself", mixed_help_result.stderr)
+
+    def test_cli_no_arguments_starts_editor(self):
+        output, code, _ = self.run_editor(None, b":q!\r", arguments=[])
+        self.assertEqual(code, 0)
+        self.assertIn(b"[No Name]", output)
+
+    def test_cli_double_dash_opens_leading_dash_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "-draft.txt")
+            with open(path, "wb") as target:
+                target.write(b"known draft\n")
+            output, code, _ = self.run_editor(
+                "-draft.txt", b":q!\r", arguments=["--", "-draft.txt"], cwd=directory
+            )
+            self.assertEqual(code, 0)
+            self.assertIn(b"known draft", output)
+
+        option_result = subprocess.run([self.executable, "-draft.txt"], capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(option_result.returncode, 0)
+        self.assertIn("unknown option: -draft.txt", option_result.stderr)
 
     def test_write_quit_and_terminal_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,16 +1,16 @@
 # Basilisk forensic quality audit and pending work
 
 **Audit date:** 2026-11-21
-**Audited checkout baseline:** `main`, commit `90f5cb5` (`Refresh product pending work roadmap`); this update records Fourmolu configuration, Darwin PTY compatibility, and expanded literate-Haskell fixtures.
+**Audited checkout baseline:** `main`, commit `033b389` (`Honor project Fourmolu configuration`); this update records explicit CLI option handling and executable-level argument coverage.
 **Scope:** repository contents, architecture, file safety, CLI behavior, build and verification controls, test evidence, and user-facing documentation. This is a source-level and local verification audit, not a security certification or a full interactive terminal acceptance test.
 
 ## Executive assessment
 
 Basilisk has a coherent pure-core/IO-shell design and substantial pure-state coverage. Recent milestones hardened external-change detection, added conservative live Haskell indentation, and enabled project/XDG Fourmolu configuration. The save path detects content and identity changes, serializes cooperating Basilisk writers, and has targeted tests for several replacement and sync-failure cases. PTY tests cover basic save/quit, formatter failure, resize, and terminal restoration.
 
-The repository is **not yet at editor-grade completion**. Project and user XDG Fourmolu configuration are now loaded on save, but literate-Haskell fixtures and cross-version formatter API coverage remain limited. Other gaps include unknown CLI option handling, filesystem failure coverage beyond injected cases, and validated compiler/platform support. The partial-function scan is lexical rather than a proof. POSIX rename still cannot close the race with unrelated writers that ignore Basilisk's advisory locks.
+The repository is **not yet at editor-grade completion**. Project and user XDG Fourmolu configuration are loaded on save, but literate-Haskell fixtures and cross-version formatter API coverage remain limited. Other gaps include filesystem failure coverage beyond injected cases and validated compiler/platform support. The partial-function scan is lexical rather than a proof. POSIX rename still cannot close the race with unrelated writers that ignore Basilisk's advisory locks.
 
-This audit records the code changes and local verification completed in the formatter-configuration milestone. The separate product roadmap is maintained in `seby_pending_work.md`.
+This audit records the code changes and local verification completed in the CLI-hardening milestone. The separate product roadmap is maintained in `seby_pending_work.md`.
 
 ## Verification evidence
 
@@ -22,7 +22,7 @@ line-count ceiling, benchmarks, PTY checks and generated-document consistency.
 | Check | Result |
 |---|---:|
 | Build all components, tests and benchmarks | Passed; zero warnings in check-script build |
-| Haskell LOC ceiling (same lexical count as `scripts/check.sh`) | 2,421 / 3,000 |
+| Haskell LOC ceiling (same lexical count as `scripts/check.sh`) | 2,440 / 3,000 |
 | Hedgehog laws | 39 passed |
 | Smoke checks | 230 passed |
 | Exhaustive mode/command/document combinations | 629,640, zero exceptions |
@@ -45,17 +45,17 @@ Severity: **P0** means release-blocking data loss/security risk; **P1** means a 
 
 **Concurrency contract:** Basilisk instances serialize writes to the same path or inode. Changes visible at the final fingerprint check are refused unless `:w!` is used. POSIX rename has no portable compare-and-swap operation, and advisory locks do not constrain unrelated programs, so a non-cooperating writer can still race the final check-to-commit interval. This limit is stated in `README.md` and the generated `Basilisk.md`.
 
-### QF-02 — CLI silently accepts unknown options
+### QF-02 — CLI silently accepts unknown options — addressed
 
 **Severity:** P2
-**Confidence:** Confirmed from implementation.
-**Evidence:** `app/Main.hs:18-28` filters every argument beginning with `-` without validating it. For example, an unrecognized `--typo` is silently ignored, and `basilisk --typo file.hs` opens the file as if the option had been accepted.
+**Confidence:** Confirmed from implementation and executable-level tests.
+**Status:** `app/Main.hs` now parses `-h`/`--help` and `-v`/`--version` as standalone options, rejects unknown options with a nonzero exit and clear diagnostic, accepts one path, and supports `--` for a leading-dash filename. `test/Terminal.py` exercises these cases, multiple paths, no-argument startup, and ordinary one-file open/save.
 
 **Impact:** Mistyped safety or behavior flags can go unnoticed; command-line behavior is surprising and difficult to script reliably.
 
-**Work:** Parse the supported help/version options explicitly; reject unknown options with a concise diagnostic and nonzero exit status; define how a filename beginning with `-` is passed (for example, `--`). Add executable-level argument tests for no args, one path, multiple paths, supported flags, unknown flags, and option-like filenames.
+**Evidence:** `./scripts/check.sh` runs the CLI checks with the real executable in addition to the existing PTY terminal scenarios.
 
-**Acceptance:** Every unrecognized option fails clearly, help/version behavior is deterministic, and a leading-dash path has a documented invocation.
+**Acceptance:** Met locally; remote compiler-matrix CI remains unverified.
 
 ### QF-03 — Installation and verification claims need a single current source
 
@@ -144,6 +144,6 @@ The feature roadmap in `seby_pending_work.md` and the limitations in `Basilisk.m
 
 ## Audit boundaries and next gate
 
-This report does not claim a complete formal audit of every key binding or every branch in the 2,421-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3. Remote CI matrix results are not confirmed. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
+This report does not claim a complete formal audit of every key binding or every branch in the 2,440-line lexical count used by `scripts/check.sh`. The complete local `./scripts/check.sh` passed on macOS arm64 with GHC 9.10.3. Remote CI matrix results are not confirmed. These checks do not establish correctness for all terminal emulators, filesystems, compiler versions, race schedules, Unicode/grapheme clusters, or malformed inputs. A deeper follow-up should turn each P1 item above into a bounded engineering milestone with regression tests and measured acceptance.
 
 **Recommended next gate:** complete QF-04's remaining literate-Haskell fixture cases and verify the Fourmolu config API across the configured compiler branches. QF-01 is closed and config lookup/error behavior now has focused coverage. Continue QF-05's remaining filesystem and exceptional-terminal cases before release; the basic PTY harness and selected write-race/failure tests already exist.

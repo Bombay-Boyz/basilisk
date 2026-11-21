@@ -48,7 +48,7 @@ fi
 step "PTY terminal regressions"
 if command -v python3 >/dev/null && exe=$(cabal list-bin exe:Basilisk 2>/dev/null); then
   if python3 test/Terminal.py "$exe" >/tmp/terminal.log 2>&1; then
-    ok "startup, mode/status placement, save/quit, formatter error, resize, cleanup"
+    ok "CLI arguments, startup, mode/status placement, save/quit, formatter error, resize, cleanup"
   else
     cat /tmp/terminal.log; bad "PTY terminal regressions"
   fi

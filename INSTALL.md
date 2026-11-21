@@ -54,6 +54,9 @@ basilisk yourfile.hs
 whole line), `x X D C s S J p P u Ctrl-R` to edit, `i a o O` to insert,
 `/ n N` to search, and `:w :q :q! :wq` to leave.
 
+The command accepts one path; unknown options are rejected. Use `--` before
+a filename beginning with `-`, for example `basilisk -- -notes.txt`.
+
 **To quit:** `:q`, or `:q!` if you have unsaved changes you want to
 discard. Ctrl-C is deliberately not bound.
 
