@@ -961,7 +961,7 @@ Tests, which do not count against the ceiling:
 | `test/Gen.hs` | Unicode-hostile generators | 136 | 187 |
 | `test/Smoke.hs` | worked examples, in vim's vocabulary | 527 | 597 |
 | `test/Exhaustive.hs` | totality sweep | 53 | 66 |
-| `test/Formatter.hs` | save-time Haskell formatter integration | 343 | 348 |
+| `test/Formatter.hs` | save-time Haskell formatter integration | 391 | 397 |
 
 ## 2.14 Deliberately out of scope for v1
 
@@ -6954,6 +6954,11 @@ main = do
         semanticHs = dir </> "Semantic.hs"
         semanticBeforeDir = dir </> "semantic-before"
         semanticAfterDir = dir </> "semantic-after"
+        cppHs = dir </> "Cpp.hs"
+        cppBeforeTrueDir = dir </> "cpp-before-true"
+        cppBeforeFalseDir = dir </> "cpp-before-false"
+        cppAfterTrueDir = dir </> "cpp-after-true"
+        cppAfterFalseDir = dir </> "cpp-after-false"
         lhs = dir </> "Literate.lhs"
         latex = dir </> "Latex.lhs"
         birdEdge = dir </> "BirdEdge.lhs"
@@ -7040,6 +7045,38 @@ main = do
           && version semanticFormatted == version repeatedFormat
           && Doc.toText (document undoBeforeRepeat) == Doc.toText (document undoAfterRepeat)
           && not (modified repeatedFormat)
+      )
+    let cppSource =
+          "{-# LANGUAGE CPP #-}\nmodule Main where\n\nmain = print answer\n\n#ifdef BASILISK_TRUE\nanswer = 42\n#else\nanswer = 7\n#endif"
+    Text.writeFile cppHs cppSource
+    (cppBeforeTrue, cppOutputBeforeTrue, cppErrorBeforeTrue) <-
+      compileAndRun cppBeforeTrueDir cppHs ["-cpp", "-DBASILISK_TRUE"]
+    (cppBeforeFalse, cppOutputBeforeFalse, cppErrorBeforeFalse) <-
+      compileAndRun cppBeforeFalseDir cppHs ["-cpp"]
+    check ("the CPP fixture's true branch compiles before formatting: " <> cppErrorBeforeTrue) (cppBeforeTrue == ExitSuccess)
+    check ("the CPP fixture's false branch compiles before formatting: " <> cppErrorBeforeFalse) (cppBeforeFalse == ExitSuccess)
+    check "the CPP fixture starts with the expected branch results" (cppOutputBeforeTrue == "42\n" && cppOutputBeforeFalse == "7\n")
+    cppEditor <- File.openFile cppHs
+    (cppFormatted, _) <-
+      perform (cppEditor, False)
+        (WriteFile cppHs (Doc.toText (document cppEditor)) False False)
+    cppBytes <- Text.readFile cppHs
+    (cppAfterTrue, cppOutputAfterTrue, cppErrorAfterTrue) <-
+      compileAndRun cppAfterTrueDir cppHs ["-cpp", "-DBASILISK_TRUE"]
+    (cppAfterFalse, cppOutputAfterFalse, cppErrorAfterFalse) <-
+      compileAndRun cppAfterFalseDir cppHs ["-cpp"]
+    check
+      "formatting preserves the CPP source and both conditional branches"
+      ( status cppFormatted == Just "written"
+          && "#ifdef BASILISK_TRUE" `Text.isInfixOf` cppBytes
+          && "#else" `Text.isInfixOf` cppBytes
+          && "#endif" `Text.isInfixOf` cppBytes
+          && cppAfterTrue == ExitSuccess
+          && cppAfterFalse == ExitSuccess
+          && cppErrorAfterTrue == ""
+          && cppErrorAfterFalse == ""
+          && cppOutputAfterTrue == cppOutputBeforeTrue
+          && cppOutputAfterFalse == cppOutputBeforeFalse
       )
     createDirectory twoSpaceDir
     Text.writeFile (twoSpaceDir </> "fourmolu.yaml") "indentation: 2\n"
@@ -7271,6 +7308,18 @@ main = do
 
 check :: String -> Bool -> IO ()
 check label condition = unless condition (fail ("FAILED: " <> label))
+
+compileAndRun :: FilePath -> FilePath -> [String] -> IO (ExitCode, String, String)
+compileAndRun outputDir source compilerOptions = do
+  createDirectory outputDir
+  let executable = outputDir </> "fixture"
+  (compiled, _, compileError) <-
+    readProcessWithExitCode "ghc" (["-v0", "-outputdir", outputDir, "-o", executable] <> compilerOptions <> [source]) ""
+  if compiled /= ExitSuccess
+    then pure (compiled, "", compileError)
+    else do
+      (ran, output, runError) <- readProcessWithExitCode executable [] ""
+      pure (ran, output, runError)
 ```
 
 ---
